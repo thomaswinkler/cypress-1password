@@ -1,0 +1,44 @@
+{
+  "name": "cypress-1password",
+  "version": "1.0.5",
+  "description": "Cypress plugin to load secrets from 1Password",
+  "scripts": {
+    "build": "tsc -b -v && rollup -c rollup.config.mjs",
+    "clean": "rimraf dist/",
+    "dev": "rollup -c rollup.config.mjs -w",
+    "package": "rimraf dist/ && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
+    "yalc:publish": "cd dist/ && npx yalc publish && cd .."
+  },
+  "keywords": [
+    "cypress",
+    "1password",
+    "plugin",
+    "secrets"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "author": "thomaswinkler77@googlemail.com",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.3",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.2",
+    "@types/debug": "^4.1.12",
+    "rimraf": "^6.0.1",
+    "rollup": "^4.41.0",
+    "rollup-plugin-dts": "^6.2.1",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "cypress": ">=10.0.0"
+  },
+  "dependencies": {
+    "@1password/op-js": "^0.1.13",
+    "debug": "^4.4.1"
+  }
+}
