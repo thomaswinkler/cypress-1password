@@ -55,19 +55,21 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
 1.  **Register the Plugin in Cypress**
 
-    In your `cypress.config.js` or `cypress.config.ts` file, import the plugin and call it within the `setupNodeEvents` function.
+    In your `cypress.config.js` or `cypress.config.ts` file, import the plugin and call it within the `setupNodeEvents` function. You can also pass plugin-specific options here.
 
     ```typescript
     // cypress.config.ts
     import { defineConfig } from 'cypress';
-    import onePasswordPlugin from 'cypress-1password-plugin'; // Adjust path if installed locally
+    import onePasswordPlugin, { Cypress1PasswordPluginOptions } from 'cypress-1password-plugin'; // Adjust path if installed locally
 
     export default defineConfig({
       e2e: {
         async setupNodeEvents(on, config) {
-          // The plugin will automatically scan config.env for 1Password references.
-          // No explicit mapping object is needed anymore.
-          return await onePasswordPlugin(on, config);
+          // Plugin options (optional)
+          const options: Cypress1PasswordPluginOptions = {
+            failOnError: true, // Default is true. Set to false to only log warnings instead of throwing errors.
+          };
+          return await onePasswordPlugin(on, config, options); // Pass options to the plugin
         },
         // ... other e2e config
       },
@@ -96,7 +98,15 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     });
     ```
 
-2.  **Define Secrets in Cypress Environment**
+2.  **Plugin Options**
+
+    The plugin accepts an optional configuration object with the following properties:
+
+    *   `failOnError` (boolean, default: `true`):
+        *   If `true`, the plugin will throw an error and halt Cypress setup if any 1Password secret (direct `op://` reference or `{{op://...}}` placeholder) cannot be resolved. This is the default behavior to ensure that tests don't run with missing critical secrets.
+        *   If `false`, the plugin will log a warning to the console if a secret cannot be resolved, but will allow Cypress to continue. The environment variable will retain its original `op://` string, or the placeholder will remain unreplaced.
+
+3.  **Define Secrets in Cypress Environment**
 
     As shown above, configure your secrets directly in the `env` block of your `cypress.config.js`/`ts` or in `cypress.env.json`.
 
@@ -117,8 +127,28 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     **Finding 1Password Secret Reference URIs:**
     You can find or construct these URIs by:
     *   Using the 1Password CLI: `op item get "My Login Item" --vault "My Vault" --format json | jq '.fields[] | select(.label=="password") | .reference'`
-    *   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_uuid>`
+    *   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_id>`
+    The plugin will attempt to match the `<field_label_or_id>` part against both the field's visible label and its unique ID (case-insensitively). For example, if a field has the label "Password" and an ID "password_123", providing either "Password" or "password_123" in the URI should work.
     Refer to the [1Password Secret Reference Syntax documentation](https://developer.1password.com/docs/cli/secret-reference-syntax/) for more details.
+
+    **Specifying Fields within Sections:**
+
+    If a field is located within a section in your 1Password item, you can specify it using a dot-separated format in the field part of the URI: `section_name.field_name`. For example:
+
+    *   `op://MyVault/MyItem/MySection.MyField`
+    *   If `CYOP_VAULT="MyVault"` and `CYOP_ITEM="MyItem"` are set: `op://MySection.MyField`
+
+    The plugin will first try to match the entire `MySection.MyField` string against field labels or IDs directly. If that fails, it will then interpret `MySection` as the section name (or ID) and `MyField` as the field name (or ID) within that section. Both section and field name/ID matching are case-insensitive.
+
+    If your field label or ID itself contains a dot (e.g., a field labeled `config.api.key` *not* in a section), the plugin will prioritize matching this full label/ID first. Only if that fails and a dot is present will it attempt to parse the specifier as `section.field`.
+
+    **Matching Priority for Sections:** When resolving `section_name.field_name`, the plugin will try to match `section_name` against the section's label first, and if that doesn't match, it will try to match against the section's ID.
+
+    **Special Handling for "url" or "website" Fields:**
+    If you specify `op://.../url` or `op://.../website` and a field explicitly labeled or identified as "url" or "website" is not found through the standard matching process (including section matching), the plugin will then look into the item's dedicated `urls` array (if present on the item structure provided by `@1password/op-js`).
+    *   It will first look for a URL marked as `primary: true`.
+    *   If no primary URL is found, it will use the first URL in the `urls` array.
+    *   The `href` property of the selected URL object will be returned.
 
     **Simplified Path Resolution with Environment Variables:**
 
