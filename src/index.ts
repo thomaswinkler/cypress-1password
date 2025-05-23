@@ -184,9 +184,9 @@ function findFieldValue(
       return (field as OpJsValueField).value;
     }
   }
-  log(`Attempt 1: No direct match found for specifier "${fieldSpecifier}".`);
+  log(`Attempt 1: No direct match found for specifier \"${fieldSpecifier}\".`);
 
-  // Attempt 2: Section.Field match - fieldSpecifier is "sectionName.fieldName"
+  // Attempt 2: Section.Field match - fieldSpecifier is \"sectionName.fieldName\"
   // This is tried only if Attempt 1 fails and the specifier contains a dot.
   const parts = fieldSpecifier.split('.');
   if (parts.length > 1) {
@@ -194,7 +194,7 @@ function findFieldValue(
     const targetSectionName = parts.join('.').toLowerCase(); // Remaining parts form section name
 
     if (targetFieldName && targetSectionName && targetSectionName.length > 0) { // Ensure section name is not empty
-      log(`Attempt 2: Parsing "${fieldSpecifier}" as Section="${targetSectionName}", Field="${targetFieldName}".`);
+      log(`Attempt 2: Parsing \"${fieldSpecifier}\" as Section=\"${targetSectionName}\", Field=\"${targetFieldName}\".`);
       for (const field of itemObject.fields) {
         const currentFieldLabel = field.label?.toLowerCase();
         const currentFieldId = field.id?.toLowerCase();
@@ -204,38 +204,58 @@ function findFieldValue(
 
         let fieldNameMatchReason = "";
         if (currentFieldLabel === targetFieldName) {
-          fieldNameMatchReason = `label ("${field.label}")`;
+          fieldNameMatchReason = `label (\"${field.label}\")`;
         } else if (currentFieldId === targetFieldName) {
-          fieldNameMatchReason = `id ("${field.id}")`;
+          fieldNameMatchReason = `id (\"${field.id}\")`;
         }
 
         if (fieldNameMatchReason) {
           // Now check if the section matches by label or ID
           let sectionMatchReason = "";
           if (currentFieldSectionLabel === targetSectionName) {
-            sectionMatchReason = `label ("${field.section?.label}")`;
+            sectionMatchReason = `label (\"${field.section?.label}\")`;
           } else if (currentFieldSectionId === targetSectionName) {
-            sectionMatchReason = `id ("${field.section?.id}")`;
+            sectionMatchReason = `id (\"${field.section?.id}\")`;
           }
 
           if (sectionMatchReason) {
             log(
-              `Attempt 2: Found field by ${fieldNameMatchReason} in section matched by ${sectionMatchReason} (matching target section "${targetSectionName}"). Value is ${typeof (field as OpJsValueField).value !== 'undefined' ? 'present' : 'absent'}.`
+              `Attempt 2: Found field by ${fieldNameMatchReason} in section matched by ${sectionMatchReason} (matching target section \"${targetSectionName}\"). Value is ${typeof (field as OpJsValueField).value !== 'undefined' ? 'present' : 'absent'}.`
             );
             return (field as OpJsValueField).value;
           } else {
             if (targetSectionName) { // Only log mismatch if a section was targeted
-                 log(`Attempt 2: Field ${fieldNameMatchReason} matched target field name "${targetFieldName}", but its section (label: "${currentFieldSectionLabel || '(none)'}", id: "${currentFieldSectionId || '(none)'}") does not match target section "${targetSectionName}" by label or ID.`);
+                 log(`Attempt 2: Field ${fieldNameMatchReason} matched target field name \"${targetFieldName}\", but its section (label: \"${currentFieldSectionLabel || '(none)'}\", id: \"${currentFieldSectionId || '(none)'}\") does not match target section \"${targetSectionName}\" by label or ID.`);
             }
           }
         }
       }
-      log(`Attempt 2: No field matching Field="${targetFieldName}" found within Section="${targetSectionName}" (checked section label and id).`);
+      log(`Attempt 2: No field matching Field=\"${targetFieldName}\" found within Section=\"${targetSectionName}\" (checked section label and id).`);
     } else {
-      log(`Attempt 2: Skipped parsing "${fieldSpecifier}" as section.field; either field or section name was empty after split.`);
+      log(`Attempt 2: Skipped parsing \"${fieldSpecifier}\" as section.field; either field or section name was empty after split.`);
     }
   } else {
-    log(`Attempt 2: Skipped, specifier "${fieldSpecifier}" does not contain '.' to suggest a section.field structure.`);
+    log(`Attempt 2: Skipped, specifier \"${fieldSpecifier}\" does not contain '.' to suggest a section.field structure.`);
+  }
+
+  // Attempt 3: Special handling for 'url' or 'website' field specifiers if no field was found yet.
+  if (fieldSpecifierLower === "url" || fieldSpecifierLower === "website") {
+    log(`Attempt 3: Specifier is \"${fieldSpecifierLower}\", checking item.urls.`);
+    if (itemObject.urls && Array.isArray(itemObject.urls) && itemObject.urls.length > 0) {
+      const primaryUrl = itemObject.urls.find(u => u.primary === true);
+      if (primaryUrl && primaryUrl.href) {
+        log(`Attempt 3: Found primary URL in item.urls: ${primaryUrl.href}`);
+        return primaryUrl.href;
+      }
+      // If no primary URL, take the first one
+      if (itemObject.urls[0] && itemObject.urls[0].href) {
+        log(`Attempt 3: No primary URL found, using first URL in item.urls: ${itemObject.urls[0].href}`);
+        return itemObject.urls[0].href;
+      }
+      log(`Attempt 3: item.urls contains entries but no href found for primary or first URL.`);
+    } else {
+      log(`Attempt 3: No item.urls array found or array is empty.`);
+    }
   }
 
   log(

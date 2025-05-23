@@ -134,6 +134,12 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
     **Matching Priority for Sections:** When resolving `section_name.field_name`, the plugin will try to match `section_name` against the section's label first, and if that doesn't match, it will try to match against the section's ID.
 
+    **Special Handling for "url" or "website" Fields:**
+    If you specify `op://.../url` or `op://.../website` and a field explicitly labeled or identified as "url" or "website" is not found through the standard matching process (including section matching), the plugin will then look into the item's dedicated `urls` array (if present on the item structure provided by `@1password/op-js`).
+    *   It will first look for a URL marked as `primary: true`.
+    *   If no primary URL is found, it will use the first URL in the `urls` array.
+    *   The `href` property of the selected URL object will be returned.
+
     **Simplified Path Resolution with Environment Variables:**
 
     To simplify referencing secrets, especially when many secrets come from the same vault or item, you can define the following environment variables. These can be set either as system environment variables (e.g., `process.env.CYOP_VAULT`) or as Cypress environment variables (e.g., in `cypress.config.js` or `cypress.env.json`):
