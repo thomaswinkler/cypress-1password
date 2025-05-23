@@ -6,6 +6,8 @@
     "build": "tsc -b -v && rollup -c rollup.config.mjs",
     "clean": "rimraf dist/",
     "package": "rimraf dist/ && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
+    "release": "semantic-release",
+    "release:test": "semantic-release --debug --dry-run --no-ci --repositoryUrl git@github.com:thomaswinkler/cypress-1password.git",
     "yalc:publish": "cd dist/ && npx yalc publish && cd .."
   },
   "keywords": [
@@ -31,10 +33,15 @@
     "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-typescript": "^12.1.2",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.1",
     "@types/debug": "^4.1.12",
     "rimraf": "^6.0.1",
     "rollup": "^4.41.0",
     "rollup-plugin-dts": "^6.2.1",
+    "semantic-release": "^24.2.2",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
