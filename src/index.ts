@@ -292,7 +292,7 @@ async function replacePlaceholders(
   pluginOptions?: CyOpPluginOptions
 ): Promise<string> {
   const log = debug("cyop:replace");
-  const placeholderRegex = new RegExp("{{\\s*(op:\\/\\/[^}\\s]+)\\s*}}", "g"); // Using new RegExp
+  const placeholderRegex = new RegExp("{{\\s{0,20}(op:\\/\\/[^}\\s]+)\\s{0,20}}}", "g"); // Mitigate ReDoS by limiting spaces
   let resultString = originalString;
   let match;
   const failOnError = pluginOptions?.failOnError ?? true; // For top-level issues in this function
