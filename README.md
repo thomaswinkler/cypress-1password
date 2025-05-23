@@ -117,7 +117,8 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     **Finding 1Password Secret Reference URIs:**
     You can find or construct these URIs by:
     *   Using the 1Password CLI: `op item get "My Login Item" --vault "My Vault" --format json | jq '.fields[] | select(.label=="password") | .reference'`
-    *   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_uuid>`
+    *   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_id>`
+    The plugin will attempt to match the `<field_label_or_id>` part against both the field's visible label and its unique ID (case-insensitively). For example, if a field has the label "Password" and an ID "password_123", providing either "Password" or "password_123" in the URI should work.
     Refer to the [1Password Secret Reference Syntax documentation](https://developer.1password.com/docs/cli/secret-reference-syntax/) for more details.
 
     **Simplified Path Resolution with Environment Variables:**
