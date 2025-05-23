@@ -1,9 +1,12 @@
 import debug from "debug";
 import {
-  read,
+  item,
   validateCli,
   setConnect,
   setServiceAccount,
+  Item as OpJsItem,
+  Field as OpJsField, // Keep for general field properties if needed
+  ValueField as OpJsValueField, // Specific type for fields with a value
 } from "@1password/op-js";
 
 // Optional: Helper function to configure op-js authentication if needed.
@@ -25,19 +28,26 @@ export function configureOpAuth(authConfig: {
   }
 }
 
+interface ResolvedSecretIdentifier {
+  vaultName: string;
+  itemName: string;
+  fieldSpecifier: string;
+  originalPath: string;
+}
+
 function resolveSecretPath(
   originalOpPath: string,
   log: debug.Debugger,
   cypressEnv?: Record<string, any>
-): string | null {
+): ResolvedSecretIdentifier | null {
   const vaultFromCypressEnv = cypressEnv?.CYOP_VAULT;
   const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
 
-  const vaultEnv =
+  let vaultEnv =
     typeof vaultFromCypressEnv === "string"
       ? vaultFromCypressEnv
       : process.env.CYOP_VAULT;
-  const itemEnv =
+  let itemEnv =
     typeof itemFromCypressEnv === "string"
       ? itemFromCypressEnv
       : process.env.CYOP_ITEM;
@@ -64,47 +74,154 @@ function resolveSecretPath(
     );
     return null;
   }
-  const pathParts = pathContent.split("/");
+  const pathParts = pathContent.split("/"); // These are raw, unencoded parts
+
+  let vaultName: string | undefined;
+  let itemName: string | undefined;
+  let fieldSpecifier: string | undefined;
 
   if (pathParts.length === 3 && pathParts.every((p) => p.length > 0)) {
-    log(`Path "${originalOpPath}" is already a full path.`);
-    return originalOpPath; // e.g., op://vault/item/field
-  }
-
-  if (pathParts.length === 2 && pathParts.every((p) => p.length > 0)) {
-    // op://item/field
+    // Full path: op://vault/item/field
+    vaultName = pathParts[0];
+    itemName = pathParts[1];
+    fieldSpecifier = pathParts[2];
+    log(
+      `Path "${originalOpPath}" is a full path. Using raw segments: Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}".`
+    );
+  } else if (pathParts.length === 2 && pathParts.every((p) => p.length > 0)) {
+    // Partial path: op://item/field, use CYOP_VAULT
     if (!vaultEnv) {
       console.warn(
-        `CYOP_VAULT environment variable is not set, but path "${originalOpPath}" (format op://item/field) requires it.`
+        `CYOP_VAULT environment variable is not set or is empty, but path "${originalOpPath}" (format op://item/field) requires it.`
       );
       return null;
     }
-    const resolved = `op://${vaultEnv}/${pathParts[0]}/${pathParts[1]}`;
-    log(`Resolved path "${originalOpPath}" to "${resolved}" using CYOP_VAULT.`);
-    return resolved;
-  }
-
-  if (pathParts.length === 1 && pathParts[0].length > 0) {
-    // op://field
+    vaultName = vaultEnv;
+    itemName = pathParts[0];
+    fieldSpecifier = pathParts[1];
+    log(
+      `Resolved path "${originalOpPath}" to Vault="${vaultName}" (from CYOP_VAULT), Item="${itemName}", Field="${fieldSpecifier}".`
+    );
+  } else if (pathParts.length === 1 && pathParts[0].length > 0) {
+    // Partial path: op://field, use CYOP_VAULT and CYOP_ITEM
     if (!vaultEnv || !itemEnv) {
       console.warn(
-        `CYOP_VAULT and/or CYOP_ITEM environment variables are not set, but path "${originalOpPath}" (format op://field) requires them.`
+        `CYOP_VAULT and/or CYOP_ITEM environment variables are not set or are empty, but path "${originalOpPath}" (format op://field) requires them.`
       );
       return null;
     }
-    const resolved = `op://${vaultEnv}/${itemEnv}/${pathParts[0]}`;
+    vaultName = vaultEnv;
+    itemName = itemEnv;
+    fieldSpecifier = pathParts[0];
     log(
-      `Resolved path "${originalOpPath}" to "${resolved}" using CYOP_VAULT and CYOP_ITEM.`
+      `Resolved path "${originalOpPath}" to Vault="${vaultName}" (from CYOP_VAULT), Item="${itemName}" (from CYOP_ITEM), Field="${fieldSpecifier}".`
     );
-    return resolved;
+  } else {
+    console.warn(
+      `Path "${originalOpPath}" has an unsupported number of segments or empty segments. Expected 1, 2, or 3 non-empty segments after \'op://\'. Found segments: [${pathParts.join(
+        ", "
+      )}]`
+    );
+    return null;
   }
 
-  console.warn(
-    `Path "${originalOpPath}" has an unsupported number of segments or empty segments. Expected 1, 2, or 3 non-empty segments after 'op://'. Found segments: [${pathParts.join(
-      ", "
-    )}]`
+  if (!vaultName || !itemName || !fieldSpecifier) {
+    console.warn(
+      `Could not fully determine vault, item, and field for "${originalOpPath}".`
+    );
+    return null;
+  }
+
+  return { vaultName, itemName, fieldSpecifier, originalPath: originalOpPath };
+}
+
+// Helper to find a specific field value from an item, supporting section.field format
+function findFieldValue(
+  itemObject: OpJsItem, // Expect OpJsItem directly
+  fieldSpecifier: string,
+  log: debug.Debugger // Added for logging
+): string | undefined {
+  if (!itemObject.fields || itemObject.fields.length === 0) {
+    log(`Item "${itemObject.title}" (ID: ${itemObject.id}) has no fields.`);
+    return undefined;
+  }
+
+  const parts = fieldSpecifier.split(".");
+  const targetFieldName = parts.pop()?.toLowerCase(); // Convert to lowercase for case-insensitive comparison
+  const targetSectionName = parts.join(".")?.toLowerCase(); // Convert to lowercase for case-insensitive comparison
+
+  const availableFieldsDesc = itemObject.fields
+    .map((f) => {
+      const sectionDesc = f.section?.label ? `${f.section.label}.` : "";
+      const valuePresence =
+        typeof (f as OpJsValueField).value !== "undefined"
+          ? "present"
+          : "absent";
+      return `${sectionDesc}${f.label} (id: ${
+        f.id || "N/A"
+      }, value: ${valuePresence})`;
+    })
+    .join(", ");
+
+  log(
+    `Searching for field specifier "${fieldSpecifier}" (parsed as Field="${targetFieldName}", Section="${
+      targetSectionName || "(none)"
+    }") within item "${itemObject.title}" (ID: ${
+      itemObject.id
+    }). Available fields: [${availableFieldsDesc}]`
   );
-  return null;
+
+  for (const field of itemObject.fields) {
+    const currentFieldLabel = field.label?.toLowerCase(); // Convert to lowercase
+    const currentFieldId = field.id?.toLowerCase(); // Convert to lowercase
+    const currentFieldSectionLabel = field.section?.label?.toLowerCase() || ""; // Convert to lowercase
+
+    let matchReason = "";
+    if (currentFieldLabel === targetFieldName) {
+      matchReason = `label ("${field.label}")`;
+    } else if (currentFieldId === targetFieldName) {
+      matchReason = `id ("${field.id}")`;
+    }
+
+    if (matchReason) {
+      if (targetSectionName) {
+        // User specified a section
+        if (currentFieldSectionLabel === targetSectionName) {
+          log(
+            `Found matching field by ${matchReason} in section "${
+              field.section?.label || ""
+            }". Value is ${
+              typeof (field as OpJsValueField).value !== "undefined"
+                ? "present"
+                : "absent"
+            }.`
+          );
+          return (field as OpJsValueField).value;
+        }
+      } else {
+        // User did not specify a section
+        log(
+          `Found field by ${matchReason}. Section: "${
+            field.section?.label || "(none)"
+          }". Value is ${
+            typeof (field as OpJsValueField).value !== "undefined"
+              ? "present"
+              : "absent"
+          }.`
+        );
+        return (field as OpJsValueField).value;
+      }
+    }
+  }
+
+  log(
+    `Field specifier "${fieldSpecifier}" (parsed as Field="${targetFieldName}", Section="${
+      targetSectionName || "(none)"
+    }") not found in item "${
+      itemObject.title
+    }" (checked label and id, case-insensitive).`
+  );
+  return undefined;
 }
 
 async function replacePlaceholders(
@@ -125,60 +242,59 @@ async function replacePlaceholders(
   }
 
   for (const m of matches) {
-    const resolvedSecretPath = resolveSecretPath(
+    const resolvedIdentifier = resolveSecretPath(
       m.shortSecretPath,
       log,
       cypressEnv
     );
-    if (!resolvedSecretPath) {
-      // Warning already logged by resolveSecretPath if path is invalid or env vars missing
-      // Log specific to placeholder skipping if needed, but might be redundant
+
+    if (!resolvedIdentifier) {
       log(
-        `Skipping placeholder "${m.placeholder}" as its path "${m.shortSecretPath}" could not be fully resolved.`
+        `Skipping placeholder "${m.placeholder}" as its path "${m.shortSecretPath}" could not be resolved.`
       );
       continue;
     }
+
+    const { vaultName, itemName, fieldSpecifier, originalPath } =
+      resolvedIdentifier;
+
     try {
-      const secretValue = await read.parse(resolvedSecretPath);
+      // item.get() can return Item | ValueField | ValueField[]
+      // We expect an Item when not using the `fields` option in item.get directly for filtering.
+      const fetchedItemData: OpJsItem | OpJsValueField | OpJsValueField[] =
+        await item.get(itemName, { vault: vaultName });
+
+      // Ensure we have an Item object to pass to findFieldValue
+      if (!("fields" in fetchedItemData) || Array.isArray(fetchedItemData)) {
+        console.warn(
+          `Fetched data for item "${itemName}" in vault "${vaultName}" was not in the expected OpJsItem format. Skipping placeholder "${m.placeholder}".`
+        );
+        continue;
+      }
+      const secretValue = findFieldValue(
+        fetchedItemData as OpJsItem,
+        fieldSpecifier,
+        log
+      );
+
       if (secretValue !== null && secretValue !== undefined) {
         resultString = resultString.replace(m.placeholder, secretValue);
-        if (m.shortSecretPath === resolvedSecretPath) {
-          log(
-            `Successfully resolved placeholder "${m.placeholder}" (path: "${resolvedSecretPath}")`
-          );
-        } else {
-          log(
-            `Successfully resolved placeholder "${m.placeholder}" (original path: "${m.shortSecretPath}", resolved: "${resolvedSecretPath}")`
-          );
-        }
+        log(
+          `Successfully resolved placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}")`
+        );
       } else {
-        if (m.shortSecretPath === resolvedSecretPath) {
-          console.warn(
-            `Secret value for placeholder "${m.placeholder}" (path: "${resolvedSecretPath}") is null or undefined. Placeholder will not be replaced.`
-          );
-        } else {
-          console.warn(
-            `Secret value for placeholder "${m.placeholder}" (original path: "${m.shortSecretPath}", resolved: "${resolvedSecretPath}") is null or undefined. Placeholder will not be replaced.`
-          );
-        }
+        console.warn(
+          `Secret value for placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found. Placeholder will not be replaced.`
+        );
       }
     } catch (error: any) {
       let errorMessage = error.message;
       if (error.stderr) {
-        errorMessage += `\nStderr: ${error.stderr}`;
+        errorMessage += `\\nStderr: ${error.stderr}`;
       }
-      if (error.stdout) {
-        errorMessage += `\nStdout: ${error.stdout}`;
-      }
-      if (m.shortSecretPath === resolvedSecretPath) {
-        console.error(
-          `Failed to load secret for placeholder "${m.placeholder}" (path: "${resolvedSecretPath}"): ${errorMessage}`
-        );
-      } else {
-        console.error(
-          `Failed to load secret for placeholder "${m.placeholder}" (original path: "${m.shortSecretPath}", resolved: "${resolvedSecretPath}"): ${errorMessage}`
-        );
-      }
+      console.error(
+        `Failed to load secret for placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}"): ${errorMessage}`
+      );
     }
   }
   return resultString;
@@ -198,9 +314,9 @@ export async function loadOpSecrets(
     log("1Password CLI validated.");
   } catch (error: any) {
     console.error(
-      `1Password CLI validation failed. Please ensure it's installed and configured, or use OP_CONNECT_HOST/TOKEN or OP_SERVICE_ACCOUNT_TOKEN for alternative auth: ${error.message}`
+      `1Password CLI validation failed. Please ensure it\'s installed and configured, or use OP_CONNECT_HOST/TOKEN or OP_SERVICE_ACCOUNT_TOKEN for alternative auth: ${error.message}`
     );
-    return config; // Return original config if CLI validation fails and no other auth is likely set up
+    return config;
   }
 
   for (const envVarName in updatedConfig.env) {
@@ -213,59 +329,61 @@ export async function loadOpSecrets(
           log(
             `Found direct op path for env var "${envVarName}": "${shortSecretPath}"`
           );
-          const resolvedSecretPath = resolveSecretPath(
+
+          const resolvedIdentifier = resolveSecretPath(
             shortSecretPath,
             log,
             updatedConfig.env
           );
 
-          if (!resolvedSecretPath) {
-            // Warning already logged by resolveSecretPath
+          if (!resolvedIdentifier) {
             log(
-              `Skipping env var "${envVarName}" as its path "${shortSecretPath}" could not be fully resolved.`
+              `Skipping env var "${envVarName}" as its path "${shortSecretPath}" could not be resolved.`
             );
           } else {
+            const { vaultName, itemName, fieldSpecifier, originalPath } =
+              resolvedIdentifier;
             try {
-              const secretValue = await read.parse(resolvedSecretPath);
+              const fetchedItemData:
+                | OpJsItem
+                | OpJsValueField
+                | OpJsValueField[] = await item.get(itemName, {
+                vault: vaultName,
+              });
+
+              if (
+                !("fields" in fetchedItemData) ||
+                Array.isArray(fetchedItemData)
+              ) {
+                console.warn(
+                  `Fetched data for item "${itemName}" in vault "${vaultName}" was not in the expected OpJsItem format. Skipping env var "${envVarName}".`
+                );
+                continue;
+              }
+              const secretValue = findFieldValue(
+                fetchedItemData as OpJsItem,
+                fieldSpecifier,
+                log
+              );
+
               if (secretValue !== null && secretValue !== undefined) {
                 updatedConfig.env[envVarName] = secretValue;
-                if (shortSecretPath === resolvedSecretPath) {
-                  log(
-                    `Successfully loaded secret for env var "${envVarName}" (path: "${resolvedSecretPath}")`
-                  );
-                } else {
-                  log(
-                    `Successfully loaded secret for env var "${envVarName}" (original path: "${shortSecretPath}", resolved: "${resolvedSecretPath}")`
-                  );
-                }
+                log(
+                  `Successfully loaded secret for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}")`
+                );
               } else {
-                if (shortSecretPath === resolvedSecretPath) {
-                  console.warn(
-                    `Secret value for env var "${envVarName}" (path: "${resolvedSecretPath}") is null or undefined.`
-                  );
-                } else {
-                  console.warn(
-                    `Secret value for env var "${envVarName}" (original path: "${shortSecretPath}", resolved: "${resolvedSecretPath}") is null or undefined.`
-                  );
-                }
+                console.warn(
+                  `Secret value for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found.`
+                );
               }
             } catch (error: any) {
               let errorMessage = error.message;
               if (error.stderr) {
-                errorMessage += `\nStderr: ${error.stderr}`;
+                errorMessage += `\\nStderr: ${error.stderr}`;
               }
-              if (error.stdout) {
-                errorMessage += `\nStdout: ${error.stdout}`;
-              }
-              if (shortSecretPath === resolvedSecretPath) {
-                console.error(
-                  `Failed to load secret for env var "${envVarName}" (path: "${resolvedSecretPath}"): ${errorMessage}`
-                );
-              } else {
-                console.error(
-                  `Failed to load secret for env var "${envVarName}" (original path: "${shortSecretPath}", resolved: "${resolvedSecretPath}"): ${errorMessage}`
-                );
-              }
+              console.error(
+                `Failed to load secret for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}"): ${errorMessage}`
+              );
             }
           }
         } else if (originalValue.includes("{{op://")) {
