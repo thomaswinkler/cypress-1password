@@ -55,19 +55,21 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
 1.  **Register the Plugin in Cypress**
 
-    In your `cypress.config.js` or `cypress.config.ts` file, import the plugin and call it within the `setupNodeEvents` function.
+    In your `cypress.config.js` or `cypress.config.ts` file, import the plugin and call it within the `setupNodeEvents` function. You can also pass plugin-specific options here.
 
     ```typescript
     // cypress.config.ts
     import { defineConfig } from 'cypress';
-    import onePasswordPlugin from 'cypress-1password-plugin'; // Adjust path if installed locally
+    import onePasswordPlugin, { Cypress1PasswordPluginOptions } from 'cypress-1password-plugin'; // Adjust path if installed locally
 
     export default defineConfig({
       e2e: {
         async setupNodeEvents(on, config) {
-          // The plugin will automatically scan config.env for 1Password references.
-          // No explicit mapping object is needed anymore.
-          return await onePasswordPlugin(on, config);
+          // Plugin options (optional)
+          const options: Cypress1PasswordPluginOptions = {
+            failOnError: true, // Default is true. Set to false to only log warnings instead of throwing errors.
+          };
+          return await onePasswordPlugin(on, config, options); // Pass options to the plugin
         },
         // ... other e2e config
       },
@@ -96,7 +98,15 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     });
     ```
 
-2.  **Define Secrets in Cypress Environment**
+2.  **Plugin Options**
+
+    The plugin accepts an optional configuration object with the following properties:
+
+    *   `failOnError` (boolean, default: `true`):
+        *   If `true`, the plugin will throw an error and halt Cypress setup if any 1Password secret (direct `op://` reference or `{{op://...}}` placeholder) cannot be resolved. This is the default behavior to ensure that tests don't run with missing critical secrets.
+        *   If `false`, the plugin will log a warning to the console if a secret cannot be resolved, but will allow Cypress to continue. The environment variable will retain its original `op://` string, or the placeholder will remain unreplaced.
+
+3.  **Define Secrets in Cypress Environment**
 
     As shown above, configure your secrets directly in the `env` block of your `cypress.config.js`/`ts` or in `cypress.env.json`.
 
