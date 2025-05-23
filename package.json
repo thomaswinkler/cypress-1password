@@ -1,11 +1,10 @@
 {
   "name": "cypress-1password",
-  "version": "1.0.5",
+  "version": "1.0.0",
   "description": "Cypress plugin to load secrets from 1Password",
   "scripts": {
     "build": "tsc -b -v && rollup -c rollup.config.mjs",
     "clean": "rimraf dist/",
-    "dev": "rollup -c rollup.config.mjs -w",
     "package": "rimraf dist/ && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
     "yalc:publish": "cd dist/ && npx yalc publish && cd .."
   },
@@ -15,6 +14,10 @@
     "plugin",
     "secrets"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thomaswinkler/cypress-1password.git"
+  },
   "exports": {
     ".": {
       "types": "./index.d.ts",
