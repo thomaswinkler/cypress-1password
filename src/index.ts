@@ -28,6 +28,16 @@ export function configureOpAuth(authConfig: {
   }
 }
 
+// Add an interface for plugin options
+export interface CyOpPluginOptions {
+  /**
+   * If true, the plugin will throw an error if a secret cannot be resolved.
+   * If false, it will log a warning and continue, leaving the environment variable unchanged or the placeholder unreplaced.
+   * @default true
+   */
+  failOnError?: boolean;
+}
+
 interface ResolvedSecretIdentifier {
   vaultName: string;
   itemName: string;
@@ -173,28 +183,43 @@ function findFieldValue(
 
     if (currentFieldLabel === fieldSpecifierLower) {
       log(
-        `Attempt 1: Found field by direct match of specifier "${fieldSpecifier}" against label ("${field.label}"). Section: "${field.section?.label || '(none)'}". Value is ${typeof (field as OpJsValueField).value !== 'undefined' ? 'present' : 'absent'}.`
+        `Attempt 1: Found field by direct match of specifier "${fieldSpecifier}" against label ("${
+          field.label
+        }"). Section: "${field.section?.label || "(none)"}". Value is ${
+          typeof (field as OpJsValueField).value !== "undefined"
+            ? "present"
+            : "absent"
+        }.`
       );
       return (field as OpJsValueField).value;
     }
     if (currentFieldId === fieldSpecifierLower) {
       log(
-        `Attempt 1: Found field by direct match of specifier "${fieldSpecifier}" against id ("${field.id}"). Section: "${field.section?.label || '(none)'}". Value is ${typeof (field as OpJsValueField).value !== 'undefined' ? 'present' : 'absent'}.`
+        `Attempt 1: Found field by direct match of specifier "${fieldSpecifier}" against id ("${
+          field.id
+        }"). Section: "${field.section?.label || "(none)"}". Value is ${
+          typeof (field as OpJsValueField).value !== "undefined"
+            ? "present"
+            : "absent"
+        }.`
       );
       return (field as OpJsValueField).value;
     }
   }
-  log(`Attempt 1: No direct match found for specifier \"${fieldSpecifier}\".`);
+  log(`Attempt 1: No direct match found for specifier "${fieldSpecifier}".`);
 
-  // Attempt 2: Section.Field match - fieldSpecifier is \"sectionName.fieldName\"
+  // Attempt 2: Section.Field match - fieldSpecifier is "sectionName.fieldName"
   // This is tried only if Attempt 1 fails and the specifier contains a dot.
-  const parts = fieldSpecifier.split('.');
+  const parts = fieldSpecifier.split(".");
   if (parts.length > 1) {
     const targetFieldName = parts.pop()?.toLowerCase(); // Last part is field name
-    const targetSectionName = parts.join('.').toLowerCase(); // Remaining parts form section name
+    const targetSectionName = parts.join(".").toLowerCase(); // Remaining parts form section name
 
-    if (targetFieldName && targetSectionName && targetSectionName.length > 0) { // Ensure section name is not empty
-      log(`Attempt 2: Parsing \"${fieldSpecifier}\" as Section=\"${targetSectionName}\", Field=\"${targetFieldName}\".`);
+    if (targetFieldName && targetSectionName && targetSectionName.length > 0) {
+      // Ensure section name is not empty
+      log(
+        `Attempt 2: Parsing "${fieldSpecifier}" as Section="${targetSectionName}", Field="${targetFieldName}".`
+      );
       for (const field of itemObject.fields) {
         const currentFieldLabel = field.label?.toLowerCase();
         const currentFieldId = field.id?.toLowerCase();
@@ -204,55 +229,82 @@ function findFieldValue(
 
         let fieldNameMatchReason = "";
         if (currentFieldLabel === targetFieldName) {
-          fieldNameMatchReason = `label (\"${field.label}\")`;
+          fieldNameMatchReason = `label ("${field.label}")`;
         } else if (currentFieldId === targetFieldName) {
-          fieldNameMatchReason = `id (\"${field.id}\")`;
+          fieldNameMatchReason = `id ("${field.id}")`;
         }
 
         if (fieldNameMatchReason) {
           // Now check if the section matches by label or ID
           let sectionMatchReason = "";
           if (currentFieldSectionLabel === targetSectionName) {
-            sectionMatchReason = `label (\"${field.section?.label}\")`;
+            sectionMatchReason = `label ("${field.section?.label}")`;
           } else if (currentFieldSectionId === targetSectionName) {
-            sectionMatchReason = `id (\"${field.section?.id}\")`;
+            sectionMatchReason = `id ("${field.section?.id}")`;
           }
 
           if (sectionMatchReason) {
             log(
-              `Attempt 2: Found field by ${fieldNameMatchReason} in section matched by ${sectionMatchReason} (matching target section \"${targetSectionName}\"). Value is ${typeof (field as OpJsValueField).value !== 'undefined' ? 'present' : 'absent'}.`
+              `Attempt 2: Found field by ${fieldNameMatchReason} in section matched by ${sectionMatchReason} (matching target section "${targetSectionName}"). Value is ${
+                typeof (field as OpJsValueField).value !== "undefined"
+                  ? "present"
+                  : "absent"
+              }.`
             );
             return (field as OpJsValueField).value;
           } else {
-            if (targetSectionName) { // Only log mismatch if a section was targeted
-                 log(`Attempt 2: Field ${fieldNameMatchReason} matched target field name \"${targetFieldName}\", but its section (label: \"${currentFieldSectionLabel || '(none)'}\", id: \"${currentFieldSectionId || '(none)'}\") does not match target section \"${targetSectionName}\" by label or ID.`);
+            if (targetSectionName) {
+              // Only log mismatch if a section was targeted
+              log(
+                `Attempt 2: Field ${fieldNameMatchReason} matched target field name "${targetFieldName}", but its section (label: "${
+                  currentFieldSectionLabel || "(none)"
+                }", id: "${
+                  currentFieldSectionId || "(none)"
+                }") does not match target section "${targetSectionName}" by label or ID.`
+              );
             }
           }
         }
       }
-      log(`Attempt 2: No field matching Field=\"${targetFieldName}\" found within Section=\"${targetSectionName}\" (checked section label and id).`);
+      log(
+        `Attempt 2: No field matching Field="${targetFieldName}" found within Section="${targetSectionName}" (checked section label and id).`
+      );
     } else {
-      log(`Attempt 2: Skipped parsing \"${fieldSpecifier}\" as section.field; either field or section name was empty after split.`);
+      log(
+        `Attempt 2: Skipped parsing "${fieldSpecifier}" as section.field; either field or section name was empty after split.`
+      );
     }
   } else {
-    log(`Attempt 2: Skipped, specifier \"${fieldSpecifier}\" does not contain '.' to suggest a section.field structure.`);
+    log(
+      `Attempt 2: Skipped, specifier "${fieldSpecifier}" does not contain '.' to suggest a section.field structure.`
+    );
   }
 
   // Attempt 3: Special handling for 'url' or 'website' field specifiers if no field was found yet.
   if (fieldSpecifierLower === "url" || fieldSpecifierLower === "website") {
-    log(`Attempt 3: Specifier is \"${fieldSpecifierLower}\", checking item.urls.`);
-    if (itemObject.urls && Array.isArray(itemObject.urls) && itemObject.urls.length > 0) {
-      const primaryUrl = itemObject.urls.find(u => u.primary === true);
+    log(
+      `Attempt 3: Specifier is "${fieldSpecifierLower}", checking item.urls.`
+    );
+    if (
+      itemObject.urls &&
+      Array.isArray(itemObject.urls) &&
+      itemObject.urls.length > 0
+    ) {
+      const primaryUrl = itemObject.urls.find((u) => u.primary === true);
       if (primaryUrl && primaryUrl.href) {
         log(`Attempt 3: Found primary URL in item.urls: ${primaryUrl.href}`);
         return primaryUrl.href;
       }
       // If no primary URL, take the first one
       if (itemObject.urls[0] && itemObject.urls[0].href) {
-        log(`Attempt 3: No primary URL found, using first URL in item.urls: ${itemObject.urls[0].href}`);
+        log(
+          `Attempt 3: No primary URL found, using first URL in item.urls: ${itemObject.urls[0].href}`
+        );
         return itemObject.urls[0].href;
       }
-      log(`Attempt 3: item.urls contains entries but no href found for primary or first URL.`);
+      log(
+        `Attempt 3: item.urls contains entries but no href found for primary or first URL.`
+      );
     } else {
       log(`Attempt 3: No item.urls array found or array is empty.`);
     }
@@ -266,12 +318,14 @@ function findFieldValue(
 
 async function replacePlaceholders(
   originalString: string,
-  cypressEnv?: Record<string, any>
+  cypressEnv?: Record<string, any>,
+  pluginOptions?: CyOpPluginOptions // Added pluginOptions
 ): Promise<string> {
   const log = debug("cyop:replace");
   const placeholderRegex = /{{\s*(op:\/\/[^}\s]+)\s*}}/g;
   let resultString = originalString;
   let match;
+  const failOnError = pluginOptions?.failOnError ?? true; // Default to true
 
   const matches = [];
   while ((match = placeholderRegex.exec(originalString)) !== null) {
@@ -289,9 +343,11 @@ async function replacePlaceholders(
     );
 
     if (!resolvedIdentifier) {
-      log(
-        `Skipping placeholder "${m.placeholder}" as its path "${m.shortSecretPath}" could not be resolved.`
-      );
+      const message = `Skipping placeholder "${m.placeholder}" as its path "${m.shortSecretPath}" could not be resolved.`;
+      if (failOnError) {
+        throw new Error(`[cypress-1password] ${message}`);
+      }
+      log(message);
       continue;
     }
 
@@ -323,31 +379,43 @@ async function replacePlaceholders(
           `Successfully resolved placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}")`
         );
       } else {
-        console.warn(
-          `Secret value for placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found. Placeholder will not be replaced.`
-        );
+        const message = `Secret value for placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found. Placeholder will not be replaced.`;
+        if (failOnError) {
+          throw new Error(`[cypress-1password] ${message}`);
+        }
+        console.warn(message); // Log warning if failOnError is false
       }
     } catch (error: any) {
       let errorMessage = error.message;
       if (error.stderr) {
         errorMessage += `\\nStderr: ${error.stderr}`;
       }
-      console.error(
-        `Failed to load secret for placeholder "${m.placeholder}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}"): ${errorMessage}`
-      );
+      if (error.message && error.message.includes("[cypress-1password]")) {
+        console.warn(error.message); // Log the error message if it's already a plugin error
+        if (failOnError) {
+          throw error; // Re-throw if it's already a plugin error
+        }
+      }
+      const fullErrorMessage = `Failed to load secret for placeholder "${m.placeholder}". ${errorMessage}`;
+      if (failOnError) {
+        throw new Error(`[cypress-1password] ${fullErrorMessage}`);
+      }
+      console.error(fullErrorMessage); // Keep console.error for non-error case
     }
   }
   return resultString;
 }
 
 export async function loadOpSecrets(
-  config: Cypress.PluginConfigOptions
+  config: Cypress.PluginConfigOptions,
+  pluginOptions?: CyOpPluginOptions // Added pluginOptions
 ): Promise<Cypress.PluginConfigOptions> {
   const log = debug("cyop:load");
   const updatedConfig = { ...config };
   if (!updatedConfig.env) {
     updatedConfig.env = {};
   }
+  const failOnError = pluginOptions?.failOnError ?? true; // Default to true
 
   try {
     await validateCli();
@@ -377,9 +445,11 @@ export async function loadOpSecrets(
           );
 
           if (!resolvedIdentifier) {
-            log(
-              `Skipping env var "${envVarName}" as its path "${shortSecretPath}" could not be resolved.`
-            );
+            const message = `Skipping env var "${envVarName}" as its path "${shortSecretPath}" could not be resolved.`;
+            if (failOnError) {
+              throw new Error(`[cypress-1password] ${message}`);
+            }
+            log(message);
           } else {
             const { vaultName, itemName, fieldSpecifier, originalPath } =
               resolvedIdentifier;
@@ -412,24 +482,39 @@ export async function loadOpSecrets(
                   `Successfully loaded secret for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}")`
                 );
               } else {
-                console.warn(
-                  `Secret value for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found.`
-                );
+                const message = `Secret value for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}") is null, undefined, or field not found.`;
+                if (failOnError) {
+                  throw new Error(`[cypress-1password] ${message}`);
+                }
+                console.warn(message); // Log warning if failOnError is false
               }
             } catch (error: any) {
               let errorMessage = error.message;
               if (error.stderr) {
                 errorMessage += `\\nStderr: ${error.stderr}`;
               }
-              console.error(
-                `Failed to load secret for env var "${envVarName}" (path: "${originalPath}" -> Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}"): ${errorMessage}`
-              );
+              if (
+                errorMessage &&
+                errorMessage.includes("[cypress-1password]")
+              ) {
+                console.warn(error.message); // Log the error message if it's already a plugin error
+                if (failOnError) {
+                  throw error; // Re-throw if it's already a plugin error
+                }
+              }
+              // Restore full path details to the error message
+              const fullErrorMessage = `Failed to load secret for env var "${envVarName}". ${errorMessage}`;
+              if (failOnError) {
+                throw new Error(`[cypress-1password] ${fullErrorMessage}`);
+              }
+              console.error(fullErrorMessage); // Keep console.error for non-error case
             }
           }
         } else if (originalValue.includes("{{op://")) {
           updatedConfig.env[envVarName] = await replacePlaceholders(
             originalValue,
-            updatedConfig.env
+            updatedConfig.env,
+            pluginOptions // Pass pluginOptions
           );
         }
       }
@@ -440,7 +525,8 @@ export async function loadOpSecrets(
 
 export default async (
   on: Cypress.PluginEvents,
-  config: Cypress.PluginConfigOptions
+  config: Cypress.PluginConfigOptions,
+  pluginOptions?: CyOpPluginOptions // Added pluginOptions
 ): Promise<Cypress.PluginConfigOptions> => {
   const log = debug("cyop:core");
   log(
@@ -455,5 +541,5 @@ export default async (
   );
 
   // The op-js library handles the authentication flow automatically.
-  return loadOpSecrets(config); // Pass the whole config
+  return loadOpSecrets(config, pluginOptions); // Pass pluginOptions
 };
