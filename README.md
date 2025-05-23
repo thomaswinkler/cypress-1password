@@ -229,6 +229,3 @@ The plugin performs the following steps during Cypress setup:
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue.
 
-## License
-
-ISC (or your chosen license)
