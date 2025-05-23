@@ -102,7 +102,6 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
     *   **Direct Reference**: If an environment variable's value is a single `op://` string, the plugin will replace the entire value with the fetched secret.
         ```json
-        // cypress.env.json example
         {
           "MY_API_TOKEN": "op://SharedVault/MyService/apiToken"
         }
@@ -110,7 +109,6 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
     *   **Embedded Placeholders**: If an environment variable is a string containing `{{op://...}}` placeholders, the plugin will replace each placeholder with its corresponding secret.
         ```json
-        // cypress.env.json example
         {
           "WELCOME_MESSAGE": "Hello {{op://UserVault/UserProfile/username}}, your API key is {{op://UserVault/UserAPIKey/key}}"
         }
@@ -145,11 +143,11 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
     This applies to both direct references and embedded placeholders. For example:
     ```json
-    // With CYOP_VAULT="UserVault" and CYOP_ITEM="UserProfile"
-    // cypress.env.json
     {
-      "USER_EMAIL": "op://email", // Resolves to op://UserVault/UserProfile/email
-      "API_ENDPOINT": "https://api.example.com/{{op://api_key}}" // Resolves to op://UserVault/UserProfile/api_key
+      "CYOP_VAULT": "UserVault",
+      "CYOP_ITEM": "UserProfile",
+      "USER_EMAIL": "op://email", 
+      "API_ENDPOINT": "https://api.example.com/{{op://api_key}}"
     }
     ```
     If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` variables are not set (either in Cypress env or process.env), a warning will be logged, and the secret will not be resolved.
