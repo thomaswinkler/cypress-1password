@@ -121,6 +121,19 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     The plugin will attempt to match the `<field_label_or_id>` part against both the field's visible label and its unique ID (case-insensitively). For example, if a field has the label "Password" and an ID "password_123", providing either "Password" or "password_123" in the URI should work.
     Refer to the [1Password Secret Reference Syntax documentation](https://developer.1password.com/docs/cli/secret-reference-syntax/) for more details.
 
+    **Specifying Fields within Sections:**
+
+    If a field is located within a section in your 1Password item, you can specify it using a dot-separated format in the field part of the URI: `section_name.field_name`. For example:
+
+    *   `op://MyVault/MyItem/MySection.MyField`
+    *   If `CYOP_VAULT="MyVault"` and `CYOP_ITEM="MyItem"` are set: `op://MySection.MyField`
+
+    The plugin will first try to match the entire `MySection.MyField` string against field labels or IDs directly. If that fails, it will then interpret `MySection` as the section name (or ID) and `MyField` as the field name (or ID) within that section. Both section and field name/ID matching are case-insensitive.
+
+    If your field label or ID itself contains a dot (e.g., a field labeled `config.api.key` *not* in a section), the plugin will prioritize matching this full label/ID first. Only if that fails and a dot is present will it attempt to parse the specifier as `section.field`.
+
+    **Matching Priority for Sections:** When resolving `section_name.field_name`, the plugin will try to match `section_name` against the section's label first, and if that doesn't match, it will try to match against the section's ID.
+
     **Simplified Path Resolution with Environment Variables:**
 
     To simplify referencing secrets, especially when many secrets come from the same vault or item, you can define the following environment variables. These can be set either as system environment variables (e.g., `process.env.CYOP_VAULT`) or as Cypress environment variables (e.g., in `cypress.config.js` or `cypress.env.json`):
