@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": ["node", "jest", "cypress"],
+    "target": "es2020",
+    "module": "es2020",
+    "moduleResolution": "node",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "strictNullChecks": false,
+    "resolveJsonModule": true,
+  },
+  "include": ["**/*.spec.ts"],
+  "exclude": ["./node_modules", "**/node_modules", "./dist", "**/dist"],
+}
