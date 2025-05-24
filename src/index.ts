@@ -28,6 +28,11 @@ export function configureOpAuth(authConfig: {
   }
 }
 
+const placeholderRegex = new RegExp(
+  "{{\\s{0,20}(op:\\/\\/[^}\\s]+)\\s{0,20}}}",
+  "g"
+); // Mitigate ReDoS by limiting spaces
+
 export interface CyOpPluginOptions {
   /**
    * If true, the plugin will throw an error if a secret cannot be resolved.
@@ -144,9 +149,12 @@ async function getAndFindSecretValue(
   pluginOptions?: CyOpPluginOptions
 ): Promise<string | undefined> {
   const failOnError = pluginOptions?.failOnError ?? true;
-  const { vaultName, itemName, fieldSpecifier, originalPath } = resolvedIdentifier;
+  const { vaultName, itemName, fieldSpecifier, originalPath } =
+    resolvedIdentifier;
 
-  log(`Fetching item "${itemName}" (vault "${vaultName}") for path "${originalPath}".`);
+  log(
+    `Fetching item "${itemName}" (vault "${vaultName}") for path "${originalPath}".`
+  );
 
   try {
     const fetchedItemData: OpJsItem | OpJsValueField | OpJsValueField[] =
@@ -159,7 +167,11 @@ async function getAndFindSecretValue(
       return undefined;
     }
 
-    const secretValue = findFieldValue(fetchedItemData as OpJsItem, fieldSpecifier, log);
+    const secretValue = findFieldValue(
+      fetchedItemData as OpJsItem,
+      fieldSpecifier,
+      log
+    );
 
     if (secretValue !== null && secretValue !== undefined) {
       log(`Success: Found value for "${originalPath}".`);
@@ -197,24 +209,38 @@ function findFieldValue(
   fieldSpecifier: string,
   log: debug.Debugger // Added for logging
 ): string | undefined {
-  if (!itemObject.fields || itemObject.fields.length === 0) {
+  const fieldSpecifierLower = fieldSpecifier.toLowerCase();
+  if (
+    !["url", "website"].includes(fieldSpecifier) &&
+    (!itemObject.fields || itemObject.fields.length === 0)
+  ) {
     log(`Item "${itemObject.title}" (ID: ${itemObject.id}) has no fields.`);
     return undefined;
   }
 
-  const fieldSpecifierLower = fieldSpecifier.toLowerCase();
+  const fields = itemObject.fields ?? [];
+
   log(
     `Searching for field "${fieldSpecifier}" in item "${itemObject.title}" (ID: ${itemObject.id}).`
   );
 
   // Attempt 1: Direct match
-  for (const field of itemObject.fields) {
+  for (const field of fields) {
     const currentFieldLabel = field.label?.toLowerCase();
     const currentFieldId = field.id?.toLowerCase();
 
-    if (currentFieldLabel === fieldSpecifierLower || currentFieldId === fieldSpecifierLower) {
+    if (
+      currentFieldLabel === fieldSpecifierLower ||
+      currentFieldId === fieldSpecifierLower
+    ) {
       log(
-        `Direct match for "${fieldSpecifier}" (Label: "${field.label}", ID: "${field.id}"). Value ${typeof (field as OpJsValueField).value !== "undefined" ? "found" : "absent"}.`
+        `Direct match for "${fieldSpecifier}" (Label: "${field.label}", ID: "${
+          field.id
+        }"). Value ${
+          typeof (field as OpJsValueField).value !== "undefined"
+            ? "found"
+            : "absent"
+        }.`
       );
       return (field as OpJsValueField).value;
     }
@@ -231,18 +257,30 @@ function findFieldValue(
       log(
         `Attempting section.field match: Section="${targetSectionName}", Field="${targetFieldName}".`
       );
-      for (const field of itemObject.fields) {
+      for (const field of fields) {
         const currentFieldLabel = field.label?.toLowerCase();
         const currentFieldId = field.id?.toLowerCase();
         const currentFieldSectionLabel = field.section?.label?.toLowerCase();
         const currentFieldSectionId = field.section?.id?.toLowerCase();
 
-        const fieldNameMatch = currentFieldLabel === targetFieldName || currentFieldId === targetFieldName;
-        const sectionNameMatch = currentFieldSectionLabel === targetSectionName || currentFieldSectionId === targetSectionName;
+        const fieldNameMatch =
+          currentFieldLabel === targetFieldName ||
+          currentFieldId === targetFieldName;
+        const sectionNameMatch =
+          currentFieldSectionLabel === targetSectionName ||
+          currentFieldSectionId === targetSectionName;
 
         if (fieldNameMatch && sectionNameMatch) {
           log(
-            `Section.field match for "${fieldSpecifier}": Field (Label: "${field.label}", ID: "${field.id}") in Section (Label: "${field.section?.label}", ID: "${field.section?.id}"). Value ${typeof (field as OpJsValueField).value !== "undefined" ? "found" : "absent"}.`
+            `Section.field match for "${fieldSpecifier}": Field (Label: "${
+              field.label
+            }", ID: "${field.id}") in Section (Label: "${
+              field.section?.label
+            }", ID: "${field.section?.id}"). Value ${
+              typeof (field as OpJsValueField).value !== "undefined"
+                ? "found"
+                : "absent"
+            }.`
           );
           return (field as OpJsValueField).value;
         }
@@ -256,15 +294,17 @@ function findFieldValue(
       );
     }
   } else {
-    log(
-      `Skipped section.field match for "${fieldSpecifier}"; no '.' found.`
-    );
+    log(`Skipped section.field match for "${fieldSpecifier}"; no '.' found.`);
   }
 
   // Attempt 3: Special handling for 'url' or 'website'
   if (fieldSpecifierLower === "url" || fieldSpecifierLower === "website") {
     log(`Attempting URL/website match for "${fieldSpecifierLower}".`);
-    if (itemObject.urls && Array.isArray(itemObject.urls) && itemObject.urls.length > 0) {
+    if (
+      itemObject.urls &&
+      Array.isArray(itemObject.urls) &&
+      itemObject.urls.length > 0
+    ) {
       const primaryUrl = itemObject.urls.find((u) => u.primary === true);
       if (primaryUrl && primaryUrl.href) {
         log(`Found primary URL: ${primaryUrl.href}`);
@@ -292,7 +332,6 @@ async function replacePlaceholders(
   pluginOptions?: CyOpPluginOptions
 ): Promise<string> {
   const log = debug("cyop:replace");
-  const placeholderRegex = new RegExp("{{\\s{0,20}(op:\\/\\/[^}\\s]+)\\s{0,20}}}", "g"); // Mitigate ReDoS by limiting spaces
   let resultString = originalString;
   let match;
   const failOnError = pluginOptions?.failOnError ?? true; // For top-level issues in this function
@@ -302,12 +341,17 @@ async function replacePlaceholders(
 
   // Create a list of all replacements to be made
   const replacements = [];
+  placeholderRegex.lastIndex = 0;
   while ((match = placeholderRegex.exec(originalString)) !== null) {
     replacements.push({ placeholder: match[0], opPath: match[1] });
   }
 
   if (replacements.length > 0) {
-    log(`Found ${replacements.length} placeholder(s) in string: "${originalString.substring(0, 50)}..."`);
+    log(
+      `Found ${
+        replacements.length
+      } placeholder(s) in string: "${originalString.substring(0, 50)}..."`
+    );
   }
 
   for (const { placeholder, opPath } of replacements) {
@@ -315,22 +359,30 @@ async function replacePlaceholders(
 
     if (resolvedSecretsCache.has(opPath)) {
       secretValue = resolvedSecretsCache.get(opPath);
-      log(`Using cached value for "${opPath}" in placeholder "${placeholder}".`);
+      log(
+        `Using cached value for "${opPath}" in placeholder "${placeholder}".`
+      );
     } else {
       const resolvedIdentifier = resolveSecretPath(opPath, log, cypressEnv);
       if (!resolvedIdentifier) {
         // resolveSecretPath already logs a console.warn
         // If failOnError is true, we should throw here as the path itself is invalid.
         if (failOnError) {
-          throw new Error(`[cypress-1password] Cannot resolve path for placeholder "${placeholder}" (path: "${opPath}").`);
+          throw new Error(
+            `[cypress-1password] Cannot resolve path for placeholder "${placeholder}" (path: "${opPath}").`
+          );
         }
         // If not failing on error, we cache 'undefined' to avoid re-processing, and skip replacement.
         resolvedSecretsCache.set(opPath, undefined);
-        continue; 
+        continue;
       }
 
       // getAndFindSecretValue handles its own logging and failOnError for fetching/finding issues
-      secretValue = await getAndFindSecretValue(resolvedIdentifier, log, pluginOptions);
+      secretValue = await getAndFindSecretValue(
+        resolvedIdentifier,
+        log,
+        pluginOptions
+      );
       resolvedSecretsCache.set(opPath, secretValue); // Cache result, even if undefined
     }
 
@@ -343,7 +395,9 @@ async function replacePlaceholders(
       // 2. resolvedIdentifier was null (and failOnError was false, so resolveSecretPath logged a warning)
       // In either case, if failOnError is false, we just log that the placeholder was not replaced.
       if (!failOnError) {
-        log(`Placeholder "${placeholder}" (path "${opPath}") could not be resolved to a value. Placeholder not replaced.`);
+        log(
+          `Placeholder "${placeholder}" (path "${opPath}") could not be resolved to a value. Placeholder not replaced.`
+        );
       }
       // If failOnError is true, an error would have been thrown by getAndFindSecretValue or by the resolveSecretPath check above.
     }
@@ -356,9 +410,12 @@ export async function loadOpSecrets(
   pluginOptions?: CyOpPluginOptions
 ): Promise<Cypress.PluginConfigOptions> {
   const log = debug("cyop:load");
+  if (!config || typeof config !== "object") {
+    return config; // No config to process
+  }
   const updatedConfig = { ...config };
   if (!updatedConfig.env) {
-    updatedConfig.env = {};
+    return config; // No env vars to process
   }
   const failOnError = pluginOptions?.failOnError ?? true; // For top-level issues in this function
 
@@ -376,40 +433,59 @@ export async function loadOpSecrets(
 
   for (const envVarName in updatedConfig.env) {
     if (Object.prototype.hasOwnProperty.call(updatedConfig.env, envVarName)) {
-      const originalValue = updatedConfig.env[envVarName];
+      let originalValue = updatedConfig.env[envVarName];
 
       if (typeof originalValue === "string") {
+        originalValue = originalValue.trim();
         if (originalValue.startsWith("op://")) {
           const opPath = originalValue;
-          log(`Processing direct op:// path for env var "${envVarName}": "${opPath}"`);
+          log(
+            `Processing direct op:// path for env var "${envVarName}": "${opPath}"`
+          );
 
-          const resolvedIdentifier = resolveSecretPath(opPath, log, updatedConfig.env);
+          const resolvedIdentifier = resolveSecretPath(
+            opPath,
+            log,
+            updatedConfig.env
+          );
           if (!resolvedIdentifier) {
             // resolveSecretPath already logs a console.warn
             // If failOnError is true, we should throw here as the path itself is invalid.
             if (failOnError) {
-               throw new Error(`[cypress-1password] Cannot resolve path for env var "${envVarName}" (path: "${opPath}").`);
+              throw new Error(
+                `[cypress-1password] Cannot resolve path for env var "${envVarName}" (path: "${opPath}").`
+              );
             }
             continue; // Skip this env var if path resolution failed and not throwing
           }
 
           // getAndFindSecretValue handles its own logging and failOnError for fetching/finding issues
-          const secretValue = await getAndFindSecretValue(resolvedIdentifier, log, pluginOptions);
+          const secretValue = await getAndFindSecretValue(
+            resolvedIdentifier,
+            log,
+            pluginOptions
+          );
 
           if (secretValue !== null && secretValue !== undefined) {
             updatedConfig.env[envVarName] = secretValue;
-            log(`Env var "${envVarName}" updated with secret from "${opPath}".`);
+            log(
+              `Env var "${envVarName}" updated with secret from "${opPath}".`
+            );
           } else {
             // If secretValue is undefined here, it means getAndFindSecretValue returned undefined
             // (and failOnError was false, so it logged a warning).
             // If failOnError is false, we log that the env var was not updated.
             if (!failOnError) {
-              log(`Env var "${envVarName}" (path "${opPath}") could not be resolved to a value. Variable not updated.`);
+              log(
+                `Env var "${envVarName}" (path "${opPath}") could not be resolved to a value. Variable not updated.`
+              );
             }
             // If failOnError is true, an error would have been thrown by getAndFindSecretValue.
           }
-        } else if (originalValue.includes("{{op://")) {
-          log(`Processing string with placeholders for env var "${envVarName}".`);
+        } else if (placeholderRegex.exec(originalValue) !== null) {
+          log(
+            `Processing string with placeholders for env var "${envVarName}".`
+          );
           // replacePlaceholders calls getAndFindSecretValue internally and handles its own logging/failOnError per placeholder.
           // If replacePlaceholders encounters an issue and failOnError is true, it will throw.
           try {
@@ -418,7 +494,9 @@ export async function loadOpSecrets(
               updatedConfig.env,
               pluginOptions
             );
-            log(`Env var "${envVarName}" updated after placeholder replacement.`);
+            log(
+              `Env var "${envVarName}" updated after placeholder replacement.`
+            );
           } catch (error: any) {
             // If replacePlaceholders throws (because failOnError is true for an issue within it),
             // we need to decide if loadOpSecrets itself should continue or rethrow.
@@ -427,7 +505,9 @@ export async function loadOpSecrets(
             // If failOnError is false at this level, the error from replacePlaceholders (if it threw)
             // would have been caught if its internal failOnError was also true. If its internal was false,
             // it would have logged. So, if we reach here and failOnError is false, we just log the problem.
-            console.warn(`[cypress-1password] Error processing placeholders for env var "${envVarName}": ${error.message}. Variable may be partially updated or unchanged.`);
+            console.warn(
+              `[cypress-1password] Error processing placeholders for env var "${envVarName}": ${error.message}. Variable may be partially updated or unchanged.`
+            );
           }
         }
       }

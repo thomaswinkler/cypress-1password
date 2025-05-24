@@ -5,6 +5,7 @@
   "scripts": {
     "build": "tsc -b -v && rollup -c rollup.config.mjs",
     "clean": "rimraf dist/",
+    "test": "jest",
     "package": "rimraf dist/ && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
     "release": "semantic-release",
     "release:test": "semantic-release --debug --dry-run --no-ci --repositoryUrl git@github.com:thomaswinkler/cypress-1password.git",
@@ -38,10 +39,13 @@
     "@semantic-release/git": "^10.0.1",
     "@semantic-release/github": "^11.0.1",
     "@types/debug": "^4.1.12",
+    "@types/jest": "^29.5.14",
+    "jest": "^29.7.0",
     "rimraf": "^6.0.1",
     "rollup": "^4.41.0",
     "rollup-plugin-dts": "^6.2.1",
     "semantic-release": "^24.2.2",
+    "ts-jest": "^29.3.4",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
