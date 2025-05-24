@@ -121,28 +121,23 @@ describe("loadOpSecrets", () => {
       },
     };
 
-    mockItemGet
-      .mockResolvedValueOnce({
-        // For username
-        id: "i",
-        title: "Item",
-        vault: { id: "v", name: "Vault" },
-        fields: [{ id: "uname", label: "username", value: "testUser" }],
-      })
-      .mockResolvedValueOnce({
-        // For password
-        id: "i",
-        title: "Item",
-        vault: { id: "v", name: "Vault" },
-        fields: [{ id: "pwd", label: "password", value: "testPass" }],
-      });
+    mockItemGet.mockResolvedValueOnce({
+      // Should be called once and then cached
+      id: "i",
+      title: "Item",
+      vault: { id: "v", name: "Vault" },
+      fields: [
+        { id: "uname", label: "username", value: "testUser" },
+        { id: "pwd", label: "password", value: "testPass" },
+      ],
+    });
 
     const updatedConfig = await loadOpSecrets(mockConfig as any);
     expect(updatedConfig.env.CONNECTION_STRING).toBe(
       "user=testUser&pass=testPass"
     );
     expect(mockItemGet).toHaveBeenCalledWith("i", { vault: "v" });
-    expect(mockItemGet).toHaveBeenCalledTimes(2);
+    expect(mockItemGet).toHaveBeenCalledTimes(1);
   });
 
   it("should handle field specifier with section (section.field)", async () => {
@@ -172,7 +167,7 @@ describe("loadOpSecrets", () => {
     const updatedConfig = await loadOpSecrets(mockConfig as any);
     expect(updatedConfig.env.SECTION_SECRET).toBe("sectionSecretValue");
     expect(updatedConfig.env.SECTION_ID_SECRET).toBe("sectionSecretValue");
-    expect(mockItemGet).toHaveBeenCalledTimes(2);
+    expect(mockItemGet).toHaveBeenCalledTimes(1);
     expect(mockItemGet).toHaveBeenCalledWith("i", { vault: "v" });
   });
 
@@ -308,7 +303,7 @@ describe("loadOpSecrets", () => {
       });
 
       await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
-        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "i" (path "op://v/i/nonexistent_field").'
+        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "Item" (ID: i, path "op://v/i/nonexistent_field").'
       );
     });
 
@@ -336,7 +331,7 @@ describe("loadOpSecrets", () => {
         "op://v/i/nonexistent_field"
       );
       expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "i" (path "op://v/i/nonexistent_field").'
+        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "Item" (ID: i, path "op://v/i/nonexistent_field").'
       );
       console.warn = originalWarn; // Restore original console.warn
     });
@@ -408,20 +403,15 @@ describe("loadOpSecrets", () => {
         },
       };
 
-      // Mock for DB_PASSWORD
+      // Mock for both DB_PASSWORD and TOKEN - should only be called once
       mockItemGet.mockResolvedValueOnce({
         id: "shared_item",
         title: "Shared Item",
         vault: { id: "shared_vault", name: "Shared Vault" },
-        fields: [{ id: "pw", label: "password_field", value: "dbPass123" }],
-      });
-
-      // Mock for TOKEN
-      mockItemGet.mockResolvedValueOnce({
-        id: "shared_item",
-        title: "Shared Item",
-        vault: { id: "shared_vault", name: "Shared Vault" },
-        fields: [{ id: "tok", label: "token_field", value: "authTokenXYZ" }],
+        fields: [
+          { id: "pw", label: "password_field", value: "dbPass123" },
+          { id: "tok", label: "token_field", value: "authTokenXYZ" },
+        ],
       });
 
       const updatedConfig = await loadOpSecrets(mockConfig as any);
@@ -430,7 +420,7 @@ describe("loadOpSecrets", () => {
       expect(mockItemGet).toHaveBeenCalledWith("shared_item", {
         vault: "shared_vault",
       });
-      expect(mockItemGet).toHaveBeenCalledTimes(2);
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
     });
 
     it("should correctly resolve path when CYOP_VAULT is in Cypress env but not process.env", async () => {
@@ -683,6 +673,258 @@ describe("loadOpSecrets", () => {
       await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "MY_SECRET" (path: "op://item/field").'
       );
+    });
+  });
+
+  describe("Iterative Caching Mechanism", () => {
+    it("should cache items and reuse them when accessed by different identifiers (ID vs title)", async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          // First access by item ID and vault ID
+          SECRET_BY_ID: "op://vault_id_123/item_id_456/field1",
+          // Second access by item title and vault name for the same item
+          SECRET_BY_TITLE: "op://Test Vault/Test Item/field2",
+        },
+      };
+
+      // Mock the item.get call - should only be called once
+      mockItemGet.mockResolvedValueOnce({
+        id: "item_id_456",
+        title: "Test Item",
+        vault: { id: "vault_id_123", name: "Test Vault" },
+        fields: [
+          { id: "f1", label: "field1", value: "value1" },
+          { id: "f2", label: "field2", value: "value2" },
+        ],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET_BY_ID).toBe("value1");
+      expect(updatedConfig.env.SECRET_BY_TITLE).toBe("value2");
+
+      // Critical: item.get should only be called once despite two different paths
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("item_id_456", {
+        vault: "vault_id_123",
+      });
+    });
+
+    it("should cache items across placeholders in the same string and direct op:// paths", async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          // Direct op:// path using item ID
+          DIRECT_SECRET: "op://vault_id_123/item_id_456/username",
+          // Placeholder using item title for the same item
+          COMBINED_STRING:
+            "user={{op://Test Vault/Test Item/username}}&pass={{op://vault_id_123/item_id_456/password}}",
+        },
+      };
+
+      // Mock the item.get call - should only be called once
+      mockItemGet.mockResolvedValueOnce({
+        id: "item_id_456",
+        title: "Test Item",
+        vault: { id: "vault_id_123", name: "Test Vault" },
+        fields: [
+          { id: "user", label: "username", value: "testuser" },
+          { id: "pass", label: "password", value: "testpass" },
+        ],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.DIRECT_SECRET).toBe("testuser");
+      expect(updatedConfig.env.COMBINED_STRING).toBe(
+        "user=testuser&pass=testpass"
+      );
+
+      // Critical: item.get should only be called once despite multiple references
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("item_id_456", {
+        vault: "vault_id_123",
+      });
+    });
+    it("should cache and reuse item fetch failures", async () => {
+      const originalError = console.error;
+      console.error = jest.fn();
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          // First access by item ID
+          SECRET_BY_ID: "op://vault1/nonexistent_item/field1",
+          // Second access using the same identifiers
+          SECRET_BY_ID_AGAIN: "op://vault1/nonexistent_item/field2",
+        },
+      };
+
+      // Mock item.get to fail - should only be called once
+      mockItemGet.mockRejectedValueOnce(new Error("Item not found"));
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+        failOnError: false,
+      });
+      expect(updatedConfig.env.SECRET_BY_ID).toBe(
+        "op://vault1/nonexistent_item/field1"
+      );
+      expect(updatedConfig.env.SECRET_BY_ID_AGAIN).toBe(
+        "op://vault1/nonexistent_item/field2"
+      );
+
+      // Critical: item.get should only be called once despite two failed accesses
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("nonexistent_item", {
+        vault: "vault1",
+      });
+
+      // Should log error for both attempts but only fetch once
+      expect(console.error).toHaveBeenCalledWith(
+        '[cypress-1password] Failed to load secret for path "op://vault1/nonexistent_item/field1" (Item: "nonexistent_item", Vault: "vault1"): Item not found'
+      );
+
+      console.error = originalError;
+    });
+
+    it("should handle case-insensitive matching for vault and item names", async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          // Access with exact case
+          SECRET_EXACT: "op://Test Vault/Test Item/field1",
+          // Access with different case but same item
+          SECRET_LOWER: "op://test vault/test item/field2",
+          // Access with mixed case
+          SECRET_MIXED: "op://TEST VAULT/TEST ITEM/field3",
+        },
+      };
+
+      // Mock the item.get call - should only be called once
+      mockItemGet.mockResolvedValueOnce({
+        id: "item123",
+        title: "Test Item",
+        vault: { id: "vault123", name: "Test Vault" },
+        fields: [
+          { id: "f1", label: "field1", value: "value1" },
+          { id: "f2", label: "field2", value: "value2" },
+          { id: "f3", label: "field3", value: "value3" },
+        ],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET_EXACT).toBe("value1");
+      expect(updatedConfig.env.SECRET_LOWER).toBe("value2");
+      expect(updatedConfig.env.SECRET_MIXED).toBe("value3");
+
+      // Critical: item.get should only be called once due to case-insensitive cache matching
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("Test Item", {
+        vault: "Test Vault",
+      });
+    });
+
+    it("should cache items when using CYOP_VAULT and CYOP_ITEM environment variables", async () => {
+      process.env.CYOP_VAULT = "shared_vault";
+      process.env.CYOP_ITEM = "shared_item";
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          // Partial paths using CYOP environment variables
+          SECRET1: "op://field1",
+          SECRET2: "op://field2",
+          // Full path to same item using IDs
+          SECRET3: "op://vault_id_456/item_id_123/field3",
+        },
+      };
+
+      // Mock the item.get call - should only be called once
+      mockItemGet.mockResolvedValueOnce({
+        id: "item_id_123",
+        title: "shared_item",
+        vault: { id: "vault_id_456", name: "shared_vault" },
+        fields: [
+          { id: "f1", label: "field1", value: "value1" },
+          { id: "f2", label: "field2", value: "value2" },
+          { id: "f3", label: "field3", value: "value3" },
+        ],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET1).toBe("value1");
+      expect(updatedConfig.env.SECRET2).toBe("value2");
+      expect(updatedConfig.env.SECRET3).toBe("value3");
+
+      // Critical: item.get should only be called once despite different path formats
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("shared_item", {
+        vault: "shared_vault",
+      });
+    });
+
+    it("should distinguish between different items and not incorrectly cache", async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          SECRET_ITEM1: "op://vault1/item1/field1",
+          SECRET_ITEM2: "op://vault1/item2/field1",
+          SECRET_ITEM1_AGAIN: "op://Vault One/Item One/field2", // Same as first item but different identifiers
+        },
+      };
+
+      // Mock first item
+      mockItemGet.mockResolvedValueOnce({
+        id: "item1",
+        title: "Item One",
+        vault: { id: "vault1", name: "Vault One" },
+        fields: [
+          { id: "f1", label: "field1", value: "item1_value1" },
+          { id: "f2", label: "field2", value: "item1_value2" },
+        ],
+      });
+
+      // Mock second item
+      mockItemGet.mockResolvedValueOnce({
+        id: "item2",
+        title: "Item Two",
+        vault: { id: "vault1", name: "Vault One" },
+        fields: [{ id: "f1", label: "field1", value: "item2_value1" }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET_ITEM1).toBe("item1_value1");
+      expect(updatedConfig.env.SECRET_ITEM2).toBe("item2_value1");
+      expect(updatedConfig.env.SECRET_ITEM1_AGAIN).toBe("item1_value2"); // Should use cached item1
+
+      // Should be called twice: once for item1, once for item2
+      expect(mockItemGet).toHaveBeenCalledTimes(2);
+      expect(mockItemGet).toHaveBeenCalledWith("item1", { vault: "vault1" });
+      expect(mockItemGet).toHaveBeenCalledWith("item2", { vault: "vault1" });
+    });
+
+    it("should cache failures and not retry failed item fetches", async () => {
+      const originalError = console.error;
+      console.error = jest.fn();
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          SECRET1: "op://vault1/failing_item/field1",
+          SECRET2: "op://vault1/failing_item/field2", // Same vault and item identifiers
+          SECRET3: "op://vault1/failing_item/field3", // Same vault and item identifiers
+        },
+      };
+
+      // Mock item.get to fail - should only be called once
+      mockItemGet.mockRejectedValueOnce(new Error("Network timeout"));
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+        failOnError: false,
+      });
+      expect(updatedConfig.env.SECRET1).toBe("op://vault1/failing_item/field1");
+      expect(updatedConfig.env.SECRET2).toBe("op://vault1/failing_item/field2");
+      expect(updatedConfig.env.SECRET3).toBe("op://vault1/failing_item/field3");
+
+      // Critical: item.get should only be called once and then cached failure used
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith("failing_item", {
+        vault: "vault1",
+      });
+
+      console.error = originalError;
     });
   });
 });
