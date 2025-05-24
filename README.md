@@ -1,6 +1,8 @@
 # Cypress 1Password Plugin
 
-Integrate your Cypress projects with 1Password to dynamically load secrets into Cypress environment variables. This plugin allows you to avoid hardcoding sensitive information like usernames, passwords, or API keys in your `cypress.env.json` files or directly in your test code.
+Integrate your Cypress projects with 1Password to dynamically load secrets into Cypress environment variables. This plugin allows you to avoid hardcoding sensitive information like usernames, passwords, or API keys in your `cypress.env.json` files or directly in your test code. 
+
+This plugin uses the official [@1password/op-js](https://1password.github.io/op-js/) library to securely fetch secrets from your 1Password vaults, making it easy to manage sensitive data in your Cypress tests.
 
 ## Features
 
@@ -12,8 +14,7 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
 ## Prerequisites
 
-*   Node.js
-*   Cypress (>=10.0.0)
+*   Cypress (tested with >=14.0.0)
 *   1Password account.
 *   One of the following authentication methods configured for `@1password/op-js`:
     *   **1Password CLI**: Installed and configured for system authentication (e.g., biometrics, desktop app integration). This is the preferred and often easiest method.
@@ -60,7 +61,7 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
     ```typescript
     // cypress.config.ts
     import { defineConfig } from 'cypress';
-    import onePasswordPlugin, { Cypress1PasswordPluginOptions } from 'cypress-1password-plugin'; // Adjust path if installed locally
+    import onePasswordPlugin, { CyOpPluginOptions } from 'cypress-1password';
 
     export default defineConfig({
       e2e: {
@@ -69,11 +70,9 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
           const options: Cypress1PasswordPluginOptions = {
             failOnError: true, // Default is true. Set to false to only log warnings instead of throwing errors.
           };
-          return await onePasswordPlugin(on, config, options); // Pass options to the plugin
+          return await onePasswordPlugin(on, config, options);
         },
-        // ... other e2e config
       },
-      // ... other Cypress config
       env: {
         // Example 1: Direct secret reference
         // The entire value of this env var will be replaced with the secret.
@@ -88,12 +87,6 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
         // Example 4: Non-secret environment variable
         BASE_URL: 'http://localhost:3000',
-
-        // After the plugin runs, your env object might look like:
-        // ADMIN_PASSWORD: 'actual_admin_password_from_1password'
-        // DATABASE_URL: 'postgres://actual_db_user:actual_db_pass@local.db.host:5432/mydb'
-        // API_KEY_SECRET: 'Key: actual_api_key, Secret: actual_api_secret'
-        // BASE_URL: 'http://localhost:3000'
       },
     });
     ```
@@ -124,64 +117,6 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
         }
         ```
 
-    **Finding 1Password Secret Reference URIs:**
-    You can find or construct these URIs by:
-    *   Using the 1Password CLI: `op item get "My Login Item" --vault "My Vault" --format json | jq '.fields[] | select(.label=="password") | .reference'`
-    *   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_id>`
-    The plugin will attempt to match the `<field_label_or_id>` part against both the field's visible label and its unique ID (case-insensitively). For example, if a field has the label "Password" and an ID "password_123", providing either "Password" or "password_123" in the URI should work.
-    Refer to the [1Password Secret Reference Syntax documentation](https://developer.1password.com/docs/cli/secret-reference-syntax/) for more details.
-
-    **Specifying Fields within Sections:**
-
-    If a field is located within a section in your 1Password item, you can specify it using a dot-separated format in the field part of the URI: `section_name.field_name`. For example:
-
-    *   `op://MyVault/MyItem/MySection.MyField`
-    *   If `CYOP_VAULT="MyVault"` and `CYOP_ITEM="MyItem"` are set: `op://MySection.MyField`
-
-    The plugin will first try to match the entire `MySection.MyField` string against field labels or IDs directly. If that fails, it will then interpret `MySection` as the section name (or ID) and `MyField` as the field name (or ID) within that section. Both section and field name/ID matching are case-insensitive.
-
-    If your field label or ID itself contains a dot (e.g., a field labeled `config.api.key` *not* in a section), the plugin will prioritize matching this full label/ID first. Only if that fails and a dot is present will it attempt to parse the specifier as `section.field`.
-
-    **Matching Priority for Sections:** When resolving `section_name.field_name`, the plugin will try to match `section_name` against the section's label first, and if that doesn't match, it will try to match against the section's ID.
-
-    **Special Handling for "url" or "website" Fields:**
-    If you specify `op://.../url` or `op://.../website` and a field explicitly labeled or identified as "url" or "website" is not found through the standard matching process (including section matching), the plugin will then look into the item's dedicated `urls` array (if present on the item structure provided by `@1password/op-js`).
-    *   It will first look for a URL marked as `primary: true`.
-    *   If no primary URL is found, it will use the first URL in the `urls` array.
-    *   The `href` property of the selected URL object will be returned.
-
-    **Simplified Path Resolution with Environment Variables:**
-
-    To simplify referencing secrets, especially when many secrets come from the same vault or item, you can define the following environment variables. These can be set either as system environment variables (e.g., `process.env.CYOP_VAULT`) or as Cypress environment variables (e.g., in `cypress.config.js` or `cypress.env.json`):
-
-    *   `CYOP_VAULT`: Specifies the default vault name or UUID.
-    *   `CYOP_ITEM`: Specifies the default item name or UUID within the `CYOP_VAULT`.
-
-    **Priority:** If both a Cypress environment variable and a system environment variable are set for `CYOP_VAULT` or `CYOP_ITEM`, the Cypress environment variable will take precedence.
-
-    The plugin will use these environment variables to construct the full secret path if you provide a partial `op://` URI:
-
-    1.  **Full Path (no environment variables needed)**:
-        `op://MyVault/MyItem/MyField`
-        This always takes precedence.
-
-    2.  **Item and Field (uses `CYOP_VAULT`)**:
-        If `CYOP_VAULT="SharedSecrets"` is set, then `op://MyItem/MyField` will be resolved as `op://SharedSecrets/MyItem/MyField`.
-
-    3.  **Field Only (uses `CYOP_VAULT` and `CYOP_ITEM`)**:
-        If `CYOP_VAULT="SharedSecrets"` and `CYOP_ITEM="ApiCredentials"` are set, then `op://MyField` will be resolved as `op://SharedSecrets/ApiCredentials/MyField`.
-
-    This applies to both direct references and embedded placeholders. For example:
-    ```json
-    {
-      "CYOP_VAULT": "UserVault",
-      "CYOP_ITEM": "UserProfile",
-      "USER_EMAIL": "op://email", 
-      "API_ENDPOINT": "https://api.example.com/{{op://api_key}}"
-    }
-    ```
-    If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` variables are not set (either in Cypress env or process.env), a warning will be logged, and the secret will not be resolved.
-
 ## Usage in Tests
 
 Once configured, the secrets will be available in your Cypress tests via `Cypress.env()`:
@@ -202,56 +137,118 @@ describe('Login Test', () => {
 });
 ```
 
-## Plugin Details
+## Resolving Secrets
 
-The plugin performs the following steps during Cypress setup:
-1.  Initializes `@1password/op-js`, which automatically attempts authentication (CLI, Connect, or Service Account).
-2.  Validates 1Password CLI accessibility (logs a warning if not found, relying on other auth methods).
-3.  Iterates through all environment variables defined in `config.env`.
-4.  For each string environment variable:
-    *   If the entire value starts with `op://`, it attempts to resolve this URI as a secret. The environment variable is updated with the resolved value.
-    *   If the value contains one or more `{{op://...}}` placeholders, it attempts to resolve each placeholder. The environment variable is updated with the new string containing resolved values.
-5.  If a secret cannot be resolved (either direct or placeholder), an error/warning is logged, and the original value (or placeholder) may remain.
+### Finding 1Password Secret Reference URIs
+
+1Password secret reference URIs follow the format `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_id>`. The `<vault_name_or_uuid>` and `<item_name_or_uuid>` can be either the name or UUID of the vault and item, respectively. The `<field_label_or_id>` is the label or unique ID of the field you want to retrieve.
+
+You can find or construct these URIs by:
+*   Using the 1Password CLI: `op item get "My Login Item" --vault "My Vault" --format json`
+*   Manually constructing them: `op://<vault_name_or_uuid>/<item_name_or_uuid>/<field_label_or_id>`
+
+The plugin will attempt to match the `<field_label_or_id>` part against both the field's visible label and its unique ID (case-insensitively). For example, if a field has the label "Password" and an ID "password_123", providing either "Password" or "password_123" in the URI should work.
+Refer to the [1Password Secret Reference Syntax documentation](https://developer.1password.com/docs/cli/secret-reference-syntax/) for more details.
+
+To list all URI references for a specific vault or item, you can use the 1Password CLI:
+```bash
+op item get "My Login Item" --vault "My Vault" --format json  | jq '.fields[] | .reference'
+```
+
+### Specifying Fields within Sections
+
+If a field is located within a section in your 1Password item, you can specify it using a dot-separated format in the field part of the URI: `section_name.field_name`. For example:
+
+*   `op://MyVault/MyItem/MySection.MyField`
+*   If `CYOP_VAULT="MyVault"` and `CYOP_ITEM="MyItem"` are set: `op://MySection.MyField`
+
+The plugin will first try to match the entire `MySection.MyField` string against field labels or IDs directly. If that fails, it will then interpret `MySection` as the section name (or ID) and `MyField` as the field name (or ID) within that section. Both section and field name/ID matching are case-insensitive.
+
+If your field label or ID itself contains a dot (e.g., a field labeled `config.api.key` *not* in a section), the plugin will prioritize matching this full label/ID first. Only if that fails and a dot is present will it attempt to parse the specifier as `section.field`.
+
+When resolving `section_name.field_name`, the plugin will try to match `section_name` against the section's label first, and if that doesn't match, it will try to match against the section's ID.
+
+### Special Handling for "url" or "website" Fields
+
+If you specify `op://.../url` or `op://.../website` and a field explicitly labeled or identified as "url" or "website" is not found through the standard matching process (including section matching), the plugin will then look into the item's dedicated `urls` array (if present on the item structure provided by `@1password/op-js`).
+*   It will first look for a URL marked as `primary: true`.
+*   If no primary URL is found, it will use the first URL in the `urls` array.
+*   The `href` property of the selected URL object will be returned.
+
+### Simplified Path Resolution with Environment Variables
+
+To simplify referencing secrets, especially when many secrets come from the same vault or item, you can define the following environment variables. These can be set either as system environment variables (e.g., `process.env.CYOP_VAULT`) or as Cypress environment variables (e.g., in `cypress.config.js` or `cypress.env.json`):
+
+*   `CYOP_VAULT`: Specifies the default vault name or UUID.
+*   `CYOP_ITEM`: Specifies the default item name or UUID within the `CYOP_VAULT`.
+
+**Priority:** If both a Cypress environment variable and a system environment variable are set for `CYOP_VAULT` or `CYOP_ITEM`, the Cypress environment variable will take precedence.
+
+The plugin will use these environment variables to construct the full secret path if you provide a partial `op://` URI:
+
+1.  **Full Path (no environment variables needed)**:
+    `op://MyVault/MyItem/MyField`
+    This always takes precedence.
+
+2.  **Item and Field (uses `CYOP_VAULT`)**:
+    If `CYOP_VAULT="SharedSecrets"` is set, then `op://MyItem/MyField` will be resolved as `op://SharedSecrets/MyItem/MyField`.
+
+3.  **Field Only (uses `CYOP_VAULT` and `CYOP_ITEM`)**:
+    If `CYOP_VAULT="SharedSecrets"` and `CYOP_ITEM="ApiCredentials"` are set, then `op://MyField` will be resolved as `op://SharedSecrets/ApiCredentials/MyField`.
+
+This applies to both direct references and embedded placeholders. For example:
+```json
+{
+  "CYOP_VAULT": "UserVault",
+  "CYOP_ITEM": "UserProfile",
+  "USER_EMAIL": "op://email", 
+  "API_ENDPOINT": "https://api.example.com/{{op://api_key}}"
+}
+```
+If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` variables are not set (either in Cypress env or process.env), a warning will be logged, and the secret will not be resolved.
 
 ## Troubleshooting
 
-*   **Authentication Issues (`1Password CLI validation failed`, `Failed to load secret ...` with auth errors)**:
-    *   **CLI**: Ensure 1Password CLI is installed, you are signed in (`op signin`), and system authentication/biometrics are working. Try a simple CLI command like `op vault ls` to test.
-    *   **Connect**: Verify `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` are correctly set and exported in the environment where Cypress is running. Check Connect server logs.
-    *   **Service Account**: Verify `OP_SERVICE_ACCOUNT_TOKEN` is correctly set and exported. Ensure the Service Account has permission to access the specified vault and item.
-*   **`Failed to load secret for ...` (other than auth)**:
-    *   Verify the 1Password secret reference URI is correct (e.g., `op://vault/item/field`).
-    *   Ensure the authenticated 1Password identity (user, Service Account, or Connect identity) has permission to access the specified vault and item.
-*   **Secrets are not replaced or are `undefined` in tests**:
-    *   Double-check the environment variable names and the `op://` URIs or `{{op://...}}` placeholders in your Cypress `env` configuration.
-    *   Ensure `onePasswordPlugin(on, config)` is correctly called, `await`ed, and its result is returned in `setupNodeEvents`.
-    *   Make sure `setupNodeEvents` is an `async` function.
-    *   Check the console output during Cypress startup for any plugin-specific logs or error messages.
-    *   Enable debug logs (see below) for more detailed output.
+### Authentication Issues (`1Password CLI validation failed`, `Failed to load secret ...` with auth errors)
+*   **CLI**: Ensure 1Password CLI is installed, you are signed in (`op signin`), and system authentication/biometrics are working. Try a simple CLI command like `op vault ls` to test.
+*   **Connect**: Verify `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` are correctly set and exported in the environment where Cypress is running. Check Connect server logs.
+*   **Service Account**: Verify `OP_SERVICE_ACCOUNT_TOKEN` is correctly set and exported. Ensure the Service Account has permission to access the specified vault and item.
+  
+### `Failed to load secret for ...` (other than auth)
+*   Verify the 1Password secret reference URI is correct (e.g., `op://vault/item/field`).
+*   Ensure the authenticated 1Password identity (user, Service Account, or Connect identity) has permission to access the specified vault and item.
+     
+### Secrets are not replaced or are `undefined` in tests
 
-*   **Enabling Debug Logs**:
-    To enable debug logs, set the `DEBUG` environment variable before running Cypress. You can specify one or more namespaces:
-    *   `cyop:core`: For general plugin initialization and flow.
-    *   `cyop:load`: For details about loading secrets (both direct `op://` and placeholders).
-    *   `cyop:replace`: For specifics on placeholder replacement.
-    *   `cyop:configure`: For logs related to explicit authentication configuration (if `configureOpAuth` is used).
-    *   `cyop:*`: For all plugin logs.
+*   Double-check the environment variable names and the `op://` URIs or `{{op://...}}` placeholders in your Cypress `env` configuration.
+*   Ensure `onePasswordPlugin(on, config)` is correctly called, `await`ed, and its result is returned in `setupNodeEvents`.
+*   Make sure `setupNodeEvents` is an `async` function.
+*   Check the console output during Cypress startup for any plugin-specific logs or error messages.
+*   Enable debug logs (see below) for more detailed output.
 
-    **Examples:**
+### Debug Logs
+To enable debug logs, set the `DEBUG` environment variable before running Cypress. You can specify one or more namespaces:
+*   `cyop:core`: For general plugin initialization and flow.
+*   `cyop:load`: For details about loading secrets (both direct `op://` and placeholders).
+*   `cyop:replace`: For specifics on placeholder replacement.
+*   `cyop:configure`: For logs related to explicit authentication configuration (if `configureOpAuth` is used).
+*   `cyop:*`: For all plugin logs.
 
-    Enable all plugin logs:
-    ```bash
-    DEBUG="cyop:*" cypress run
-    # or
-    DEBUG="cyop:*" yarn cypress run 
-    ```
+**Examples:**
 
-    Enable specific logs (e.g., core and loading):
-    ```bash
-    DEBUG="cyop:core,cyop:load" cypress open
-    ```
+Enable all plugin logs:
+```bash
+DEBUG="cyop:*" cypress run
+# or
+DEBUG="cyop:*" yarn cypress run 
+```
 
-    You can also set this environment variable in your shell's configuration file (e.g., `~/.zshrc`, `~/.bashrc`) or for a single session.
+Enable specific logs (e.g., core and loading):
+```bash
+DEBUG="cyop:core,cyop:load" cypress open
+```
+
+You can also set this environment variable in your shell's configuration file (e.g., `~/.zshrc`, `~/.bashrc`) or for a single session.
 
 ## Contributing
 
