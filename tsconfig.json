@@ -15,5 +15,6 @@
     "esModuleInterop": true,
     "emitDeclarationOnly": false // Ensure JS files are also emitted for tsc (though Rollup handles final JS)
   },
-  "include": ["./src/**/*"]
+  "include": ["./src/**/*"],
+  "exclude": ["**/*.spec.ts", "**/*.spec.tsx"]
 }
