@@ -128,7 +128,7 @@ describe('Login Test', () => {
     const adminPassword = Cypress.env('ADMIN_PASSWORD');
     const dbUrl = Cypress.env('DATABASE_URL');
 
-    expect(adminPassword).to.be.a('string').and.not be.empty;
+    expect(adminPassword).to.be.a('string').and.not.be.empty;
     expect(dbUrl).to.contain('postgres://'); // Assuming part of the string remains if placeholders were used
 
     cy.log(`Admin Password retrieved: ${adminPassword}`); // For debugging, be careful logging secrets
@@ -221,7 +221,7 @@ If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` varia
 ### Secrets are not replaced or are `undefined` in tests
 
 *   Double-check the environment variable names and the `op://` URIs or `{{op://...}}` placeholders in your Cypress `env` configuration.
-*   Ensure `onePasswordPlugin(on, config)` is correctly called, `await`ed, and its result is returned in `setupNodeEvents`.
+*   Ensure `onePasswordPlugin(on, config, options)` is correctly called, `await`ed, and its result is returned in `setupNodeEvents`. Use `failOnError: true` to catch issues during plugin initialization.
 *   Make sure `setupNodeEvents` is an `async` function.
 *   Check the console output during Cypress startup for any plugin-specific logs or error messages.
 *   Enable debug logs (see below) for more detailed output.
