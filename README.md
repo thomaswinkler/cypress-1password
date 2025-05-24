@@ -67,7 +67,7 @@ This plugin uses the official [@1password/op-js](https://1password.github.io/op-
       e2e: {
         async setupNodeEvents(on, config) {
           // Plugin options (optional)
-          const options: Cypress1PasswordPluginOptions = {
+          const options: CyOpPluginOptions = {
             failOnError: true, // Default is true. Set to false to only log warnings instead of throwing errors.
           };
           return await onePasswordPlugin(on, config, options);
