@@ -30,7 +30,7 @@ export function configureOpAuth(authConfig: {
 
 // Performance and validation constants
 const OP_PROTOCOL_PREFIX = "op://";
-const OP_PROTOCOL_LENGTH = 5;
+const OP_PROTOCOL_LENGTH = OP_PROTOCOL_PREFIX.length;
 const MIN_PATH_PARTS = 1;
 const MAX_PATH_PARTS = 3;
 const SECTION_FIELD_SEPARATOR = ".";
@@ -40,9 +40,9 @@ const SPECIAL_URL_FIELDS = ["url", "website"];
 
 // Pre-compiled regex for better performance
 const placeholderRegex = new RegExp(
-  "{{\\s{0,20}(op:\\/\\/[^}]+?)\\s{0,20}}}",
+  `{{\\s{0,20}(${OP_PROTOCOL_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]+?)\\s{0,20}}}`,
   "g"
-); // Updated to allow spaces in op:// paths while preventing ReDoS
+); // Updated to allow spaces in ${OP_PROTOCOL_PREFIX} paths while preventing ReDoS
 
 // Type definitions and interfaces
 export interface CyOpPluginOptions {
@@ -54,7 +54,7 @@ export interface CyOpPluginOptions {
   failOnError?: boolean;
 }
 
-interface ResolvedSecretIdentifier {
+interface CyOpResolvedSecretIdentifier {
   vaultName: string;
   itemName: string;
   fieldSpecifier: string;
@@ -62,12 +62,12 @@ interface ResolvedSecretIdentifier {
 }
 
 // Define types for cached items
-type CachedItemEntry =
+type CyOpCachedItemEntry =
   | OpJsItem
   | { error: any; vaultName: string; itemName: string; originalPath: string };
 
 // Utility functions
-function isErrorEntry(entry: CachedItemEntry): entry is {
+function isErrorEntry(entry: CyOpCachedItemEntry): entry is {
   error: any;
   vaultName: string;
   itemName: string;
@@ -89,7 +89,7 @@ function resolveSecretPath(
   originalOpPath: string,
   log: debug.Debugger,
   cypressEnv?: Record<string, any>
-): ResolvedSecretIdentifier | null {
+): CyOpResolvedSecretIdentifier | null {
   const vaultFromCypressEnv = cypressEnv?.CYOP_VAULT;
   const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
 
@@ -193,9 +193,9 @@ function resolveSecretPath(
  * @returns The secret value or undefined if not found/error occurred
  */
 async function getAndFindSecretValue(
-  resolvedIdentifier: ResolvedSecretIdentifier,
+  resolvedIdentifier: CyOpResolvedSecretIdentifier,
   log: debug.Debugger,
-  itemCache: CachedItemEntry[], // Added itemCache parameter
+  itemCache: CyOpCachedItemEntry[], 
   pluginOptions?: CyOpPluginOptions
 ): Promise<string | undefined> {
   const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
@@ -492,7 +492,7 @@ function findFieldValue(
 async function replacePlaceholders(
   originalString: string,
   cypressEnv: Record<string, any> | undefined, // Made cypressEnv explicitly potentially undefined
-  itemCache: CachedItemEntry[], // Added itemCache parameter
+  itemCache: CyOpCachedItemEntry[], // Added itemCache parameter
   pluginOptions?: CyOpPluginOptions
 ): Promise<string> {
   const log = debug("cyop:replace");
@@ -584,7 +584,7 @@ export async function loadOpSecrets(
   pluginOptions?: CyOpPluginOptions
 ): Promise<Cypress.PluginConfigOptions> {
   const log = debug("cyop:load");
-  const itemCache: CachedItemEntry[] = []; // Initialize item cache as an array
+  const itemCache: CyOpCachedItemEntry[] = []; // Initialize item cache as an array
 
   if (!config || typeof config !== "object") {
     return config; // No config to process
@@ -613,10 +613,10 @@ export async function loadOpSecrets(
 
       if (typeof originalValue === "string") {
         originalValue = originalValue.trim();
-        if (originalValue.startsWith("op://")) {
+        if (originalValue.startsWith(OP_PROTOCOL_PREFIX)) {
           const opPath = originalValue;
           log(
-            `Processing direct op:// path for env var "${envVarName}": "${opPath}"`
+            `Processing direct ${OP_PROTOCOL_PREFIX} path for env var "${envVarName}": "${opPath}"`
           );
 
           const resolvedIdentifier = resolveSecretPath(
@@ -703,7 +703,7 @@ export default async (
   const log = debug("cyop:core");
   log(
     "Initializing to load secrets from environment variables. " +
-      "It will look for values starting with 'op://' or containing '{{op://...}}' placeholders."
+      `It will look for values starting with '${OP_PROTOCOL_PREFIX}' or containing '{{${OP_PROTOCOL_PREFIX}...}}' placeholders.`
   );
 
   // The op-js library handles the authentication flow automatically.
