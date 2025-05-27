@@ -1,13 +1,12 @@
-import debug from "debug";
+import debug from 'debug';
 import {
   item,
   validateCli,
   setConnect,
   setServiceAccount,
   Item as OpJsItem,
-  Field as OpJsField, // Keep for general field properties if needed
   ValueField as OpJsValueField, // Specific type for fields with a value
-} from "@1password/op-js";
+} from '@1password/op-js';
 
 // Optional: Helper function to configure op-js authentication if needed.
 // By default, op-js tries CLI (system auth) -> Connect env vars -> Service Account env var.
@@ -18,30 +17,30 @@ export function configureOpAuth(authConfig: {
   connectToken?: string;
   serviceAccountToken?: string;
 }) {
-  const log = debug("cyop:configure");
+  const log = debug('cyop:configure');
   if (authConfig.connectHost && authConfig.connectToken) {
     setConnect(authConfig.connectHost, authConfig.connectToken);
-    log("Configured to use 1Password Connect.");
+    log('Configured to use 1Password Connect.');
   } else if (authConfig.serviceAccountToken) {
     setServiceAccount(authConfig.serviceAccountToken);
-    log("Configured to use 1Password Service Account.");
+    log('Configured to use 1Password Service Account.');
   }
 }
 
 // Performance and validation constants
-const OP_PROTOCOL_PREFIX = "op://";
+const OP_PROTOCOL_PREFIX = 'op://';
 const OP_PROTOCOL_LENGTH = OP_PROTOCOL_PREFIX.length;
 const MIN_PATH_PARTS = 1;
 const MAX_PATH_PARTS = 3;
-const SECTION_FIELD_SEPARATOR = ".";
-const ERROR_PREFIX = "[cypress-1password]";
+const SECTION_FIELD_SEPARATOR = '.';
+const ERROR_PREFIX = '[cypress-1password]';
 const DEFAULT_FAIL_ON_ERROR = true;
-const SPECIAL_URL_FIELDS = ["url", "website"];
+const SPECIAL_URL_FIELDS = ['url', 'website'];
 
 // Pre-compiled regex for better performance
 const placeholderRegex = new RegExp(
   `{{\\s{0,20}(${OP_PROTOCOL_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]+?)\\s{0,20}}}`,
-  "g"
+  'g'
 ); // Updated to allow spaces in ${OP_PROTOCOL_PREFIX} paths while preventing ReDoS
 
 // Type definitions and interfaces
@@ -64,7 +63,12 @@ interface CyOpResolvedSecretIdentifier {
 // Define types for cached items
 type CyOpCachedItemEntry =
   | OpJsItem
-  | { error: any; vaultName: string; itemName: string; originalPath: string };
+  | {
+      error: any;
+      vaultName: string;
+      itemName: string;
+      originalPath: string;
+    };
 
 // Utility functions
 function isErrorEntry(entry: CyOpCachedItemEntry): entry is {
@@ -93,12 +97,12 @@ function resolveSecretPath(
   const vaultFromCypressEnv = cypressEnv?.CYOP_VAULT;
   const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
 
-  let vaultEnv =
-    typeof vaultFromCypressEnv === "string"
+  const vaultEnv =
+    typeof vaultFromCypressEnv === 'string'
       ? vaultFromCypressEnv
       : process.env.CYOP_VAULT;
-  let itemEnv =
-    typeof itemFromCypressEnv === "string"
+  const itemEnv =
+    typeof itemFromCypressEnv === 'string'
       ? itemFromCypressEnv
       : process.env.CYOP_ITEM;
 
@@ -120,7 +124,7 @@ function resolveSecretPath(
     );
     return null;
   }
-  const pathParts = pathContent.split("/");
+  const pathParts = pathContent.split('/');
 
   let vaultName: string | undefined;
   let itemName: string | undefined;
@@ -165,7 +169,7 @@ function resolveSecretPath(
   } else {
     console.warn(
       `${ERROR_PREFIX} Path "${originalOpPath}" has unsupported segment structure: [${pathParts.join(
-        ", "
+        ', '
       )}]`
     );
     return null;
@@ -179,7 +183,12 @@ function resolveSecretPath(
     return null;
   }
 
-  return { vaultName, itemName, fieldSpecifier, originalPath: originalOpPath };
+  return {
+    vaultName,
+    itemName,
+    fieldSpecifier,
+    originalPath: originalOpPath,
+  };
 }
 
 /**
@@ -195,7 +204,7 @@ function resolveSecretPath(
 async function getAndFindSecretValue(
   resolvedIdentifier: CyOpResolvedSecretIdentifier,
   log: debug.Debugger,
-  itemCache: CyOpCachedItemEntry[], 
+  itemCache: CyOpCachedItemEntry[],
   pluginOptions?: CyOpPluginOptions
 ): Promise<string | undefined> {
   const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
@@ -256,13 +265,15 @@ async function getAndFindSecretValue(
 
   try {
     const fetchedItemData: OpJsItem | OpJsValueField | OpJsValueField[] =
-      await item.get(itemName, { vault: vaultName });
+      await item.get(itemName, {
+        vault: vaultName,
+      });
 
-    if (!("fields" in fetchedItemData) || Array.isArray(fetchedItemData)) {
+    if (!('fields' in fetchedItemData) || Array.isArray(fetchedItemData)) {
       const message = `Data for item "${itemName}" (vault "${vaultName}", path "${originalPath}") not in expected OpJsItem format.`;
       // Cache the failure
       itemCache.push({
-        error: new Error("Invalid item format"),
+        error: new Error('Invalid item format'),
         vaultName,
         itemName,
         originalPath,
@@ -300,7 +311,12 @@ async function getAndFindSecretValue(
       `Failed to fetch item "${itemName}" (vault "${vaultName}") for path "${originalPath}". Error: ${error.message}`
     );
     // Cache the failure
-    itemCache.push({ error, vaultName, itemName, originalPath });
+    itemCache.push({
+      error,
+      vaultName,
+      itemName,
+      originalPath,
+    });
 
     let errorMessage = error.message;
     // Check if it's an error from op-js which might have stderr
@@ -406,7 +422,7 @@ function findFieldValue(
   if (matchedField) {
     log(
       `Direct match for "${fieldSpecifier}" found. Value ${
-        typeof matchedField.value !== "undefined" ? "found" : "absent"
+        typeof matchedField.value !== 'undefined' ? 'found' : 'absent'
       }.`
     );
     return matchedField.value;
@@ -432,7 +448,7 @@ function findFieldValue(
       if (matchedField) {
         log(
           `Section.field match for "${fieldSpecifier}" found. Value ${
-            typeof matchedField.value !== "undefined" ? "found" : "absent"
+            typeof matchedField.value !== 'undefined' ? 'found' : 'absent'
           }.`
         );
         return matchedField.value;
@@ -495,7 +511,7 @@ async function replacePlaceholders(
   itemCache: CyOpCachedItemEntry[], // Added itemCache parameter
   pluginOptions?: CyOpPluginOptions
 ): Promise<string> {
-  const log = debug("cyop:replace");
+  const log = debug('cyop:replace');
   let resultString = originalString;
   let match;
   const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR; // For top-level issues in this function
@@ -507,7 +523,10 @@ async function replacePlaceholders(
   const replacements = [];
   placeholderRegex.lastIndex = 0;
   while ((match = placeholderRegex.exec(originalString)) !== null) {
-    replacements.push({ placeholder: match[0], opPath: match[1] });
+    replacements.push({
+      placeholder: match[0],
+      opPath: match[1],
+    });
   }
 
   if (replacements.length > 0) {
@@ -583,10 +602,10 @@ export async function loadOpSecrets(
   config: Cypress.PluginConfigOptions,
   pluginOptions?: CyOpPluginOptions
 ): Promise<Cypress.PluginConfigOptions> {
-  const log = debug("cyop:load");
+  const log = debug('cyop:load');
   const itemCache: CyOpCachedItemEntry[] = []; // Initialize item cache as an array
 
-  if (!config || typeof config !== "object") {
+  if (!config || typeof config !== 'object') {
     return config; // No config to process
   }
   const updatedConfig = { ...config };
@@ -597,7 +616,7 @@ export async function loadOpSecrets(
 
   try {
     await validateCli();
-    log("1Password CLI validated.");
+    log('1Password CLI validated.');
   } catch (error: any) {
     console.error(
       `${ERROR_PREFIX} 1Password CLI validation failed. Plugin will not load secrets. Error: ${error.message}`
@@ -605,13 +624,13 @@ export async function loadOpSecrets(
     return config; // Critical setup error, return original config
   }
 
-  log("Processing Cypress environment variables for 1Password secrets...");
+  log('Processing Cypress environment variables for 1Password secrets...');
 
   for (const envVarName in updatedConfig.env) {
     if (Object.prototype.hasOwnProperty.call(updatedConfig.env, envVarName)) {
       let originalValue = updatedConfig.env[envVarName];
 
-      if (typeof originalValue === "string") {
+      if (typeof originalValue === 'string') {
         originalValue = originalValue.trim();
         if (originalValue.startsWith(OP_PROTOCOL_PREFIX)) {
           const opPath = originalValue;
@@ -691,7 +710,7 @@ export async function loadOpSecrets(
       }
     }
   }
-  log("Finished processing Cypress environment variables.");
+  log('Finished processing Cypress environment variables.');
   return updatedConfig;
 }
 
@@ -700,9 +719,9 @@ export default async (
   config: Cypress.PluginConfigOptions,
   pluginOptions?: CyOpPluginOptions // Added pluginOptions
 ): Promise<Cypress.PluginConfigOptions> => {
-  const log = debug("cyop:core");
+  const log = debug('cyop:core');
   log(
-    "Initializing to load secrets from environment variables. " +
+    'Initializing to load secrets from environment variables. ' +
       `It will look for values starting with '${OP_PROTOCOL_PREFIX}' or containing '{{${OP_PROTOCOL_PREFIX}...}}' placeholders.`
   );
 
