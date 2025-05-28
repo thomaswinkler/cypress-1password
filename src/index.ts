@@ -54,7 +54,7 @@ export interface CyOpPluginOptions {
 }
 
 interface CyOpResolvedSecretIdentifier {
-  vaultName: string;
+  vaultNames: string[]; // Changed from vaultName to support multiple vaults
   itemName: string;
   fieldSpecifier: string;
   originalPath: string;
@@ -81,8 +81,40 @@ function isErrorEntry(entry: CyOpCachedItemEntry): entry is {
 }
 
 /**
+ * Parses vault environment variable which can be:
+ * - A string with comma-separated vault names/IDs
+ * - An array of vault names/IDs (when passed from Cypress env)
+ *
+ * @param vaultEnv - The vault environment variable value
+ * @returns Array of vault names/IDs in the order they should be tried
+ */
+function parseVaultEnvironment(
+  vaultEnv: string | string[] | undefined
+): string[] {
+  if (!vaultEnv) {
+    return [];
+  }
+
+  if (Array.isArray(vaultEnv)) {
+    return vaultEnv
+      .filter((v) => typeof v === 'string' && v.trim().length > 0)
+      .map((v) => v.trim());
+  }
+
+  if (typeof vaultEnv === 'string') {
+    return vaultEnv
+      .split(',')
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0);
+  }
+
+  return [];
+}
+
+/**
  * Resolves a 1Password secret path into its component parts (vault, item, field).
  * Supports full paths (op://vault/item/field) and partial paths using CYOP_VAULT and CYOP_ITEM.
+ * CYOP_VAULT can be a comma-separated list or array of vault names/IDs to check in order.
  *
  * @param originalOpPath - The original op:// path to resolve
  * @param log - Debug logger instance
@@ -98,7 +130,7 @@ function resolveSecretPath(
   const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
 
   const vaultEnv =
-    typeof vaultFromCypressEnv === 'string'
+    vaultFromCypressEnv !== undefined
       ? vaultFromCypressEnv
       : process.env.CYOP_VAULT;
   const itemEnv =
@@ -107,7 +139,7 @@ function resolveSecretPath(
       : process.env.CYOP_ITEM;
 
   log(
-    `Resolving op path: "${originalOpPath}" (CYOP_VAULT: "${vaultEnv}", CYOP_ITEM: "${itemEnv}")`
+    `Resolving op path: "${originalOpPath}" (CYOP_VAULT: "${JSON.stringify(vaultEnv)}", CYOP_ITEM: "${itemEnv}")`
   );
 
   if (!originalOpPath || !originalOpPath.startsWith(OP_PROTOCOL_PREFIX)) {
@@ -126,7 +158,7 @@ function resolveSecretPath(
   }
   const pathParts = pathContent.split('/');
 
-  let vaultName: string | undefined;
+  let vaultNames: string[] = [];
   let itemName: string | undefined;
   let fieldSpecifier: string | undefined;
 
@@ -134,37 +166,39 @@ function resolveSecretPath(
     pathParts.length === MAX_PATH_PARTS &&
     pathParts.every((p) => p.length > 0)
   ) {
-    vaultName = pathParts[0];
+    vaultNames = [pathParts[0]];
     itemName = pathParts[1];
     fieldSpecifier = pathParts[2];
     log(
-      `Path "${originalOpPath}" -> Full path. Vault="${vaultName}", Item="${itemName}", Field="${fieldSpecifier}".`
+      `Path "${originalOpPath}" -> Full path. Vault="${vaultNames[0]}", Item="${itemName}", Field="${fieldSpecifier}".`
     );
   } else if (pathParts.length === 2 && pathParts.every((p) => p.length > 0)) {
-    if (!vaultEnv) {
+    const parsedVaults = parseVaultEnvironment(vaultEnv);
+    if (parsedVaults.length === 0) {
       console.warn(
         `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
       );
       return null;
     }
-    vaultName = vaultEnv;
+    vaultNames = parsedVaults;
     itemName = pathParts[0];
     fieldSpecifier = pathParts[1];
     log(
-      `Path "${originalOpPath}" -> Partial path (item/field). Vault="${vaultName}" (from CYOP_VAULT), Item="${itemName}", Field="${fieldSpecifier}".`
+      `Path "${originalOpPath}" -> Partial path (item/field). Vaults="${vaultNames.join(', ')}" (from CYOP_VAULT), Item="${itemName}", Field="${fieldSpecifier}".`
     );
   } else if (pathParts.length === MIN_PATH_PARTS && pathParts[0].length > 0) {
-    if (!vaultEnv || !itemEnv) {
+    const parsedVaults = parseVaultEnvironment(vaultEnv);
+    if (parsedVaults.length === 0 || !itemEnv) {
       console.warn(
         `${ERROR_PREFIX} CYOP_VAULT and/or CYOP_ITEM missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}field).`
       );
       return null;
     }
-    vaultName = vaultEnv;
+    vaultNames = parsedVaults;
     itemName = itemEnv;
     fieldSpecifier = pathParts[0];
     log(
-      `Path "${originalOpPath}" -> Partial path (field). Vault="${vaultName}" (from CYOP_VAULT), Item="${itemName}" (from CYOP_ITEM), Field="${fieldSpecifier}".`
+      `Path "${originalOpPath}" -> Partial path (field). Vaults="${vaultNames.join(', ')}" (from CYOP_VAULT), Item="${itemName}" (from CYOP_ITEM), Field="${fieldSpecifier}".`
     );
   } else {
     console.warn(
@@ -175,7 +209,7 @@ function resolveSecretPath(
     return null;
   }
 
-  if (!vaultName || !itemName || !fieldSpecifier) {
+  if (vaultNames.length === 0 || !itemName || !fieldSpecifier) {
     // This case should ideally be caught by the specific checks above.
     console.warn(
       `${ERROR_PREFIX} Could not fully determine vault, item, and field for "${originalOpPath}".`
@@ -184,7 +218,7 @@ function resolveSecretPath(
   }
 
   return {
-    vaultName,
+    vaultNames,
     itemName,
     fieldSpecifier,
     originalPath: originalOpPath,
@@ -194,6 +228,7 @@ function resolveSecretPath(
 /**
  * Retrieves and finds a secret value from 1Password using the resolved identifier.
  * Utilizes caching to avoid redundant API calls and handles both successful items and errors.
+ * Tries multiple vaults in the order specified until the item is found.
  *
  * @param resolvedIdentifier - The resolved secret path components
  * @param log - Debug logger instance
@@ -208,7 +243,7 @@ async function getAndFindSecretValue(
   pluginOptions?: CyOpPluginOptions
 ): Promise<string | undefined> {
   const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
-  const { vaultName, itemName, fieldSpecifier, originalPath } =
+  const { vaultNames, itemName, fieldSpecifier, originalPath } =
     resolvedIdentifier;
 
   // 1. Check cache by iterating through cached items
@@ -218,13 +253,13 @@ async function getAndFindSecretValue(
       // The error was cached with the exact vaultName and itemName that were passed to item.get
       // So we need to check if the current request would resolve to the same parameters
       if (
-        cachedEntry.vaultName === vaultName &&
+        vaultNames.includes(cachedEntry.vaultName) &&
         cachedEntry.itemName === itemName
       ) {
         log(
-          `Using cached error for item "${itemName}" (vault "${vaultName}") for path "${originalPath}".`
+          `Using cached error for item "${itemName}" (vault "${cachedEntry.vaultName}") for path "${originalPath}".`
         );
-        const message = `Previously failed to fetch item "${itemName}" (vault "${vaultName}") for path "${cachedEntry.originalPath}". Error: ${cachedEntry.error.message}`;
+        const message = `Previously failed to fetch item "${itemName}" (vault "${cachedEntry.vaultName}") for path "${cachedEntry.originalPath}". Error: ${cachedEntry.error.message}`;
         if (failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
         console.warn(`${ERROR_PREFIX} ${message}`);
         return undefined;
@@ -232,10 +267,12 @@ async function getAndFindSecretValue(
     } else {
       // It's an OpJsItem
       const cachedItem = cachedEntry;
-      // Match vault by ID or name (case-insensitive for name)
-      const vaultMatch =
-        cachedItem.vault.id === vaultName ||
-        cachedItem.vault.name?.toLowerCase() === vaultName.toLowerCase();
+      // Check if any of the vault names match the cached item's vault
+      const vaultMatch = vaultNames.some(
+        (vaultName) =>
+          cachedItem.vault.id === vaultName ||
+          cachedItem.vault.name?.toLowerCase() === vaultName.toLowerCase()
+      );
       // Match item by ID or title (case-insensitive for title)
       const itemMatch =
         cachedItem.id === itemName ||
@@ -259,83 +296,109 @@ async function getAndFindSecretValue(
     }
   }
 
-  log(
-    `Fetching item "${itemName}" (vault "${vaultName}") for path "${originalPath}" (not found in cache).`
-  );
+  // 2. Try each vault in order until we find the item or exhaust all vaults
+  const errors: Array<{ vaultName: string; error: any }> = [];
 
-  try {
-    const fetchedItemData: OpJsItem | OpJsValueField | OpJsValueField[] =
-      await item.get(itemName, {
-        vault: vaultName,
-      });
+  for (const vaultName of vaultNames) {
+    log(
+      `Fetching item "${itemName}" (vault "${vaultName}") for path "${originalPath}" (not found in cache).`
+    );
 
-    if (!('fields' in fetchedItemData) || Array.isArray(fetchedItemData)) {
-      const message = `Data for item "${itemName}" (vault "${vaultName}", path "${originalPath}") not in expected OpJsItem format.`;
+    try {
+      const fetchedItemData: OpJsItem | OpJsValueField | OpJsValueField[] =
+        await item.get(itemName, {
+          vault: vaultName,
+        });
+
+      if (!('fields' in fetchedItemData) || Array.isArray(fetchedItemData)) {
+        const message = `Data for item "${itemName}" (vault "${vaultName}", path "${originalPath}") not in expected OpJsItem format.`;
+        const error = new Error(message);
+        errors.push({ vaultName, error });
+        // Cache the failure
+        itemCache.push({
+          error,
+          vaultName,
+          itemName,
+          originalPath,
+        });
+        continue; // Try next vault
+      }
+
+      const fetchedItemDataAsItem = fetchedItemData as OpJsItem;
+      log(
+        `Successfully fetched item "${fetchedItemDataAsItem.title}" (ID: ${fetchedItemDataAsItem.id}, Vault: ${fetchedItemDataAsItem.vault.name}).`
+      );
+
+      // Cache the successfully fetched item
+      itemCache.push(fetchedItemDataAsItem);
+
+      const secretValue = findFieldValue(
+        fetchedItemDataAsItem,
+        fieldSpecifier,
+        log
+      );
+
+      if (secretValue !== null && secretValue !== undefined) {
+        log(`Success: Found value for "${originalPath}".`);
+        return secretValue;
+      } else {
+        const message = `Field "${fieldSpecifier}" not found or value is null/undefined in item "${fetchedItemDataAsItem.title}" (ID: ${fetchedItemDataAsItem.id}, path "${originalPath}").`;
+        if (failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
+        console.warn(`${ERROR_PREFIX} ${message}`);
+        return undefined;
+      }
+    } catch (error: any) {
+      log(
+        `Failed to fetch item "${itemName}" (vault "${vaultName}") for path "${originalPath}". Error: ${error.message}`
+      );
+      errors.push({ vaultName, error });
+
       // Cache the failure
       itemCache.push({
-        error: new Error('Invalid item format'),
+        error,
         vaultName,
         itemName,
         originalPath,
       });
-      if (failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-      console.warn(`${ERROR_PREFIX} ${message}`);
-      return undefined;
+
+      // Continue to try next vault unless this is the last one
+      if (vaultName === vaultNames[vaultNames.length - 1]) {
+        // This was the last vault, handle the error
+        let errorMessage = error.message;
+        // Check if it's an error from op-js which might have stderr
+        if (error.stderr) errorMessage += `\nStderr: ${error.stderr}`;
+
+        // If the error message is already prefixed (e.g., from a previous throw in this function or findFieldValue),
+        // and failOnError is true, rethrow it. If failOnError is false, log it (it's already prefixed).
+        if (error.message && error.message.startsWith(ERROR_PREFIX)) {
+          if (failOnError) throw error; // Rethrow the already formatted error
+          console.warn(error.message); // Log the already formatted warning
+          return undefined;
+        }
+
+        // For other errors (e.g., network issues, op-js internal errors not caught above)
+        let fullErrorMessage: string;
+        if (vaultNames.length === 1) {
+          // Single vault - use original error format for backward compatibility
+          fullErrorMessage = `Failed to load secret for path "${originalPath}" (Item: "${itemName}", Vault: "${vaultNames[0]}"): ${errorMessage}`;
+        } else {
+          // Multiple vaults - use new format
+          const vaultsList = vaultNames.join(', ');
+          fullErrorMessage = `Failed to load secret for path "${originalPath}" (Item: "${itemName}") after trying all vaults [${vaultsList}]. Last error: ${errorMessage}`;
+        }
+        if (failOnError) throw new Error(`${ERROR_PREFIX} ${fullErrorMessage}`);
+        console.error(`${ERROR_PREFIX} ${fullErrorMessage}`); // Use console.error for unexpected errors
+        return undefined;
+      }
     }
-
-    const fetchedItemDataAsItem = fetchedItemData as OpJsItem;
-    log(
-      `Successfully fetched item "${fetchedItemDataAsItem.title}" (ID: ${fetchedItemDataAsItem.id}, Vault: ${fetchedItemDataAsItem.vault.name}).`
-    );
-
-    // Cache the successfully fetched item
-    itemCache.push(fetchedItemDataAsItem);
-
-    const secretValue = findFieldValue(
-      fetchedItemDataAsItem,
-      fieldSpecifier,
-      log
-    );
-
-    if (secretValue !== null && secretValue !== undefined) {
-      log(`Success: Found value for "${originalPath}".`);
-      return secretValue;
-    } else {
-      const message = `Field "${fieldSpecifier}" not found or value is null/undefined in item "${fetchedItemDataAsItem.title}" (ID: ${fetchedItemDataAsItem.id}, path "${originalPath}").`;
-      if (failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-      console.warn(`${ERROR_PREFIX} ${message}`);
-      return undefined;
-    }
-  } catch (error: any) {
-    log(
-      `Failed to fetch item "${itemName}" (vault "${vaultName}") for path "${originalPath}". Error: ${error.message}`
-    );
-    // Cache the failure
-    itemCache.push({
-      error,
-      vaultName,
-      itemName,
-      originalPath,
-    });
-
-    let errorMessage = error.message;
-    // Check if it's an error from op-js which might have stderr
-    if (error.stderr) errorMessage += `\nStderr: ${error.stderr}`;
-
-    // If the error message is already prefixed (e.g., from a previous throw in this function or findFieldValue),
-    // and failOnError is true, rethrow it. If failOnError is false, log it (it's already prefixed).
-    if (error.message && error.message.startsWith(ERROR_PREFIX)) {
-      if (failOnError) throw error; // Rethrow the already formatted error
-      console.warn(error.message); // Log the already formatted warning
-      return undefined;
-    }
-
-    // For other errors (e.g., network issues, op-js internal errors not caught above)
-    const fullErrorMessage = `Failed to load secret for path "${originalPath}" (Item: "${itemName}", Vault: "${vaultName}"): ${errorMessage}`;
-    if (failOnError) throw new Error(`${ERROR_PREFIX} ${fullErrorMessage}`);
-    console.error(`${ERROR_PREFIX} ${fullErrorMessage}`); // Use console.error for unexpected errors
-    return undefined;
   }
+
+  // If we get here, no vault had the item (shouldn't happen due to the logic above, but safety net)
+  const vaultsList = vaultNames.join(', ');
+  const message = `Item "${itemName}" not found in any of the specified vaults [${vaultsList}] for path "${originalPath}".`;
+  if (failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
+  console.warn(`${ERROR_PREFIX} ${message}`);
+  return undefined;
 }
 
 /**

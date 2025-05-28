@@ -618,6 +618,204 @@ describe('loadOpSecrets', () => {
     });
   });
 
+  describe('Multiple Vault Support', () => {
+    it('should support comma-separated vault list in CYOP_VAULT', async () => {
+      process.env.CYOP_VAULT = 'personal,team,shared';
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          SECRET: 'op://test-item/password',
+        },
+      };
+
+      // Mock first vault to fail, second vault to succeed
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Item not found in personal vault'))
+        .mockResolvedValueOnce({
+          id: 'test-item',
+          title: 'Test Item',
+          vault: { id: 'team', name: 'Team Vault' },
+          fields: [{ id: 'pwd', label: 'password', value: 'teamSecret123' }],
+        });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET).toBe('teamSecret123');
+
+      // Should have tried personal vault first, then team vault
+      expect(mockItemGet).toHaveBeenCalledWith('test-item', {
+        vault: 'personal',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('test-item', { vault: 'team' });
+      expect(mockItemGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('should support array vault list in Cypress env CYOP_VAULT', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: ['vault1', 'vault2', 'vault3'],
+          SECRET: 'op://shared-item/token',
+        },
+      };
+
+      // Mock first two vaults to fail, third vault to succeed
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Not found in vault1'))
+        .mockRejectedValueOnce(new Error('Not found in vault2'))
+        .mockResolvedValueOnce({
+          id: 'shared-item',
+          title: 'Shared Item',
+          vault: { id: 'vault3', name: 'Vault 3' },
+          fields: [{ id: 'tok', label: 'token', value: 'vault3Token' }],
+        });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET).toBe('vault3Token');
+
+      // Should have tried all three vaults in order
+      expect(mockItemGet).toHaveBeenCalledWith('shared-item', {
+        vault: 'vault1',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('shared-item', {
+        vault: 'vault2',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('shared-item', {
+        vault: 'vault3',
+      });
+      expect(mockItemGet).toHaveBeenCalledTimes(3);
+    });
+
+    it('should cache failures per vault when trying multiple vaults', async () => {
+      process.env.CYOP_VAULT = 'vault1,vault2';
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          SECRET1: 'op://missing-item/field1',
+          SECRET2: 'op://missing-item/field2', // Same item, different field
+        },
+      };
+
+      // Mock both vaults to fail for the item
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Not found in vault1'))
+        .mockRejectedValueOnce(new Error('Not found in vault2'));
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+        failOnError: false,
+      });
+
+      // Both secrets should remain unchanged
+      expect(updatedConfig.env.SECRET1).toBe('op://missing-item/field1');
+      expect(updatedConfig.env.SECRET2).toBe('op://missing-item/field2');
+
+      // Should only call item.get twice (once per vault) for the first secret,
+      // and use cached failures for the second secret
+      expect(mockItemGet).toHaveBeenCalledTimes(2);
+      expect(mockItemGet).toHaveBeenCalledWith('missing-item', {
+        vault: 'vault1',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('missing-item', {
+        vault: 'vault2',
+      });
+    });
+
+    it('should handle mixed comma-separated and array format correctly', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'vault1, vault2,vault3 ,vault4', // Mixed spacing
+          SECRET: 'op://test-item/password',
+        },
+      };
+
+      // Mock to succeed on vault3
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Not found'))
+        .mockRejectedValueOnce(new Error('Not found'))
+        .mockResolvedValueOnce({
+          id: 'test-item',
+          title: 'Test Item',
+          vault: { id: 'vault3', name: 'Vault 3' },
+          fields: [{ id: 'pwd', label: 'password', value: 'foundSecret' }],
+        });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.SECRET).toBe('foundSecret');
+
+      // Should properly parse and try vaults with trimmed names
+      expect(mockItemGet).toHaveBeenCalledWith('test-item', {
+        vault: 'vault1',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('test-item', {
+        vault: 'vault2',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('test-item', {
+        vault: 'vault3',
+      });
+      expect(mockItemGet).toHaveBeenCalledTimes(3);
+    });
+
+    it('should provide detailed error message when all vaults fail', async () => {
+      const originalError = console.error;
+      console.error = jest.fn();
+
+      process.env.CYOP_VAULT = 'vault1,vault2,vault3';
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          SECRET: 'op://missing-item/field',
+        },
+      };
+
+      // Mock all vaults to fail
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Vault1 error'))
+        .mockRejectedValueOnce(new Error('Vault2 error'))
+        .mockRejectedValueOnce(new Error('Vault3 error'));
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+        failOnError: false,
+      });
+      expect(updatedConfig.env.SECRET).toBe('op://missing-item/field');
+
+      // Should show multi-vault error format
+      expect(console.error).toHaveBeenCalledWith(
+        '[cypress-1password] Failed to load secret for path "op://missing-item/field" (Item: "missing-item") after trying all vaults [vault1, vault2, vault3]. Last error: Vault3 error'
+      );
+
+      console.error = originalError;
+    });
+
+    it('should handle placeholders with multiple vaults', async () => {
+      process.env.CYOP_VAULT = 'personal,shared';
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          DATABASE_URL: 'postgresql://user:{{op://db-creds/password}}@host/db',
+        },
+      };
+
+      // Mock personal vault to fail, shared vault to succeed
+      mockItemGet
+        .mockRejectedValueOnce(new Error('Not in personal'))
+        .mockResolvedValueOnce({
+          id: 'db-creds',
+          title: 'DB Credentials',
+          vault: { id: 'shared', name: 'Shared Vault' },
+          fields: [{ id: 'pwd', label: 'password', value: 'dbpass123' }],
+        });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.DATABASE_URL).toBe(
+        'postgresql://user:dbpass123@host/db'
+      );
+
+      expect(mockItemGet).toHaveBeenCalledWith('db-creds', {
+        vault: 'personal',
+      });
+      expect(mockItemGet).toHaveBeenCalledWith('db-creds', { vault: 'shared' });
+      expect(mockItemGet).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('Handling of non-string and empty config.env values', () => {
     it('should ignore non-string values in config.env', async () => {
       const mockConfig: MockCypressConfig = {
