@@ -7,6 +7,7 @@ This plugin uses the official [@1password/op-js](https://1password.github.io/op-
 ## Features
 
 *   Load secrets directly from your 1Password vaults into Cypress environment variables.
+*   **Multiple Vault Support**: Configure multiple vaults in `CYOP_VAULT` (comma-separated or array) to automatically search across personal, team, and shared vaults in order.
 *   Supports two methods for specifying secrets:
     *   Directly assigning a 1Password secret reference URI (e.g., `op://vault/item/field`) to an environment variable.
     *   Embedding secret reference URIs as placeholders (e.g., `{{op://vault/item/field}}`) within string environment variables.
@@ -87,6 +88,16 @@ This plugin uses the official [@1password/op-js](https://1password.github.io/op-
 
         // Example 4: Non-secret environment variable
         BASE_URL: 'http://localhost:3000',
+        
+        // Example 5: Multiple vault configuration
+        CYOP_VAULT: 'PersonalVault,TeamVault,SharedSecrets', // Check vaults in this order
+        CYOP_ITEM: 'DefaultCredentials',
+        
+        // With multiple vaults configured above, this will search:
+        // 1. PersonalVault/DefaultCredentials/apiKey
+        // 2. TeamVault/DefaultCredentials/apiKey  
+        // 3. SharedSecrets/DefaultCredentials/apiKey
+        DEFAULT_API_KEY: 'op://apiKey',
       },
     });
     ```
@@ -179,10 +190,23 @@ If you specify `op://.../url` or `op://.../website` and a field explicitly label
 
 To simplify referencing secrets, especially when many secrets come from the same vault or item, you can define the following environment variables. These can be set either as system environment variables (e.g., `process.env.CYOP_VAULT`) or as Cypress environment variables (e.g., in `cypress.config.js` or `cypress.env.json`):
 
-*   `CYOP_VAULT`: Specifies the default vault name or UUID.
-*   `CYOP_ITEM`: Specifies the default item name or UUID within the `CYOP_VAULT`.
+*   `CYOP_VAULT`: Specifies the default vault name(s) or UUID(s). Can be:
+    *   A single vault: `"MyVault"` or `"personal-vault-uuid"`
+    *   Multiple vaults (comma-separated): `"PersonalVault,TeamVault,SharedVault"`
+    *   An array when defined in Cypress config: `["PersonalVault", "TeamVault"]`
+*   `CYOP_ITEM`: Specifies the default item name or UUID within the vault(s) specified by `CYOP_VAULT`.
 
 **Priority:** If both a Cypress environment variable and a system environment variable are set for `CYOP_VAULT` or `CYOP_ITEM`, the Cypress environment variable will take precedence.
+
+#### Multiple Vault Support
+
+When using multiple vaults in `CYOP_VAULT`, the plugin will search for items in the order vaults are specified. This is useful when you have secrets distributed across different vaults (e.g., personal and team vaults) and want to check them automatically without changing the environment variable for each test.
+
+For example, with `CYOP_VAULT="PersonalVault,TeamVault,SharedSecrets"`:
+- First, the plugin attempts to find the item in `PersonalVault`
+- If not found, it tries `TeamVault`
+- Finally, it tries `SharedSecrets`
+- If the item is not found in any vault, an error is reported with details about all vaults checked
 
 The plugin will use these environment variables to construct the full secret path if you provide a partial `op://` URI:
 
@@ -192,9 +216,13 @@ The plugin will use these environment variables to construct the full secret pat
 
 2.  **Item and Field (uses `CYOP_VAULT`)**:
     If `CYOP_VAULT="SharedSecrets"` is set, then `op://MyItem/MyField` will be resolved as `op://SharedSecrets/MyItem/MyField`.
+    
+    With multiple vaults like `CYOP_VAULT="PersonalVault,TeamVault"`, the plugin will try `op://PersonalVault/MyItem/MyField` first, then `op://TeamVault/MyItem/MyField` if not found.
 
 3.  **Field Only (uses `CYOP_VAULT` and `CYOP_ITEM`)**:
     If `CYOP_VAULT="SharedSecrets"` and `CYOP_ITEM="ApiCredentials"` are set, then `op://MyField` will be resolved as `op://SharedSecrets/ApiCredentials/MyField`.
+    
+    With multiple vaults, the same search order applies: `op://PersonalVault/ApiCredentials/MyField`, then `op://TeamVault/ApiCredentials/MyField`, etc.
 
 This applies to both direct references and embedded placeholders. For example:
 ```json
@@ -205,6 +233,37 @@ This applies to both direct references and embedded placeholders. For example:
   "API_ENDPOINT": "https://api.example.com/{{op://api_key}}"
 }
 ```
+
+#### Multiple Vault Configuration Examples
+
+```javascript
+// cypress.config.js - String format (comma-separated)
+export default defineConfig({
+  env: {
+    CYOP_VAULT: 'PersonalVault,TeamVault,SharedSecrets',
+    CYOP_ITEM: 'ServiceCredentials',
+    API_TOKEN: 'op://token', // Will search all three vaults in order
+  }
+});
+```
+
+```javascript
+// cypress.config.js - Array format
+export default defineConfig({
+  env: {
+    CYOP_VAULT: ['PersonalVault', 'TeamVault', 'SharedSecrets'],
+    CYOP_ITEM: 'ServiceCredentials',
+    API_TOKEN: 'op://token', // Will search all three vaults in order
+  }
+});
+```
+
+```bash
+# Environment variable format (comma-separated)
+export CYOP_VAULT="PersonalVault,TeamVault,SharedSecrets"
+export CYOP_ITEM="ServiceCredentials"
+```
+
 If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` variables are not set (either in Cypress env or process.env), a warning will be logged, and the secret will not be resolved.
 
 ## Troubleshooting
@@ -217,6 +276,13 @@ If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` varia
 ### `Failed to load secret for ...` (other than auth)
 *   Verify the 1Password secret reference URI is correct (e.g., `op://vault/item/field`).
 *   Ensure the authenticated 1Password identity (user, Service Account, or Connect identity) has permission to access the specified vault and item.
+*   **For multiple vaults**: Check that the item exists in at least one of the specified vaults and that you have access to all vaults listed in `CYOP_VAULT`.
+     
+### Multiple Vault Issues
+*   **Item not found in any vault**: Verify the item name/ID is correct and exists in at least one of the vaults specified in `CYOP_VAULT`.
+*   **Vault access permissions**: Ensure your 1Password account, Service Account, or Connect identity has access to all vaults listed in `CYOP_VAULT`.
+*   **Vault names vs UUIDs**: Make sure vault names are exact matches (case-sensitive) or use vault UUIDs for more reliable identification.
+*   **Order matters**: Items will be retrieved from the first vault in the list where they're found. If you have duplicate items across vaults, the plugin will use the one from the vault listed first in `CYOP_VAULT`.
      
 ### Secrets are not replaced or are `undefined` in tests
 
