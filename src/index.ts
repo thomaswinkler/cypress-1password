@@ -1,11 +1,13 @@
 import debug from 'debug';
 import {
   item,
+  vault,
   validateCli,
   setConnect,
   setServiceAccount,
   Item as OpJsItem,
   ValueField as OpJsValueField, // Specific type for fields with a value
+  AbbreviatedVault,
 } from '@1password/op-js';
 
 // Optional: Helper function to configure op-js authentication if needed.
@@ -113,6 +115,34 @@ function parseVaultEnvironment(
 }
 
 /**
+ * Gets all available vaults from 1Password using the vault.list API.
+ * Handles errors gracefully and filters out vaults without valid identifiers.
+ *
+ * @param log - Debug logger instance
+ * @returns Array of vault names/IDs, or empty array if vault listing fails
+ */
+async function getAllVaults(log: debug.Debugger): Promise<string[]> {
+  try {
+    const vaults: AbbreviatedVault[] = await vault.list();
+    log(`Retrieved ${vaults.length} vaults from 1Password.`);
+
+    // Use vault name if available, otherwise fall back to vault ID
+    const vaultNames = vaults
+      .map((v) => v.name?.trim() || v.id?.trim())
+      .filter((name) => name && name.length > 0);
+
+    log(`Usable vault identifiers: [${vaultNames.join(', ')}]`);
+    return vaultNames;
+  } catch (error: any) {
+    log(`Failed to list vaults: ${error.message}`);
+    console.warn(
+      `${ERROR_PREFIX} Could not automatically discover vaults. Error: ${error.message}. Consider setting CYOP_VAULT explicitly.`
+    );
+    return [];
+  }
+}
+
+/**
  * Parses an op:// URI into its component parts.
  * Supports various formats: op://vault/item/field, op://vault/item, op://item/field, op://field
  * Also supports query parameters like ?target_url=encoded_url
@@ -199,53 +229,23 @@ export function parseOpUri(
 
 /**
  * Resolves a 1Password secret path into its component parts (vault, item, field).
- * Supports full paths (op://vault/item/field) and partial paths using CYOP_VAULT and CYOP_ITEM.
- * Also supports session URIs from C8Y_SESSION or CYOP_SESSION (op://vault/item format).
- * CYOP_VAULT can be a comma-separated list or array of vault names/IDs to check in order.
+ * This is a simplified version that only handles path parsing.
+ * Vault resolution is handled at a higher level in loadOpSecrets.
  *
  * @param originalOpPath - The original op:// path to resolve
+ * @param defaultVaultNames - Default vault names to use for partial paths
+ * @param defaultItemName - Default item name to use for field-only paths
  * @param log - Debug logger instance
- * @param cypressEnv - Cypress environment variables (optional)
  * @returns Resolved secret identifier or null if path is invalid
  */
 function resolveSecretPath(
   originalOpPath: string,
+  defaultVaultNames: string[],
+  defaultItemName: string | undefined,
   log: debug.Debugger,
-  cypressEnv?: Record<string, any>
+  sessionUrl?: string
 ): CyOpResolvedSecretIdentifier | null {
-  const vaultFromCypressEnv = cypressEnv?.CYOP_VAULT;
-  const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
-  const sessionFromCypressEnv =
-    cypressEnv?.CYOP_SESSION || cypressEnv?.C8Y_SESSION;
-
-  let vaultEnv =
-    vaultFromCypressEnv !== undefined
-      ? vaultFromCypressEnv
-      : process.env.CYOP_VAULT;
-  let itemEnv =
-    typeof itemFromCypressEnv === 'string'
-      ? itemFromCypressEnv
-      : process.env.CYOP_ITEM;
-  const sessionEnv =
-    typeof sessionFromCypressEnv === 'string'
-      ? sessionFromCypressEnv
-      : (process.env.CYOP_SESSION ?? process.env.C8Y_SESSION);
-
-  let url: string | undefined = undefined;
-  if (sessionEnv) {
-    const sessionOpObject = parseOpUri(sessionEnv, true, log);
-    if (!itemEnv && sessionOpObject?.item) {
-      itemEnv = sessionOpObject.item; // Use item from session if not set
-    }
-    if (!vaultEnv && sessionOpObject?.vault) {
-      vaultEnv = sessionOpObject.vault;
-    }
-    url = sessionOpObject?.url; // Use URL from session if available
-  }
-
-  log(
-    `Resolving op path: "${originalOpPath}" (CYOP_VAULT: "${JSON.stringify(vaultEnv)}", CYOP_ITEM: "${itemEnv}", SESSION: "${sessionEnv || 'N/A'}")`
-  );
+  log(`Resolving op path: "${originalOpPath}"`);
 
   if (!originalOpPath || !originalOpPath.startsWith(OP_PROTOCOL_PREFIX)) {
     console.warn(
@@ -260,23 +260,12 @@ function resolveSecretPath(
     return null;
   }
 
-  const vaultNames: string[] | undefined = opUri?.vault
-    ? [opUri.vault]
-    : parseVaultEnvironment(vaultEnv);
-  if (!vaultNames || vaultNames.length === 0) {
-    console.warn(
-      `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
-    );
-    return null;
-  }
-  const itemName = opUri?.item ?? itemEnv;
+  const vaultNames = opUri?.vault ? [opUri.vault] : defaultVaultNames;
+  const itemName = opUri?.item ?? defaultItemName;
   const fieldSpecifier = opUri?.field;
-  if (opUri?.url) {
-    url = opUri.url; // Use URL from opUri if available
-  }
+  const url = opUri?.url ?? sessionUrl; // Use URL from opUri or session URL
 
   if (vaultNames.length === 0 || !itemName || !fieldSpecifier) {
-    // This case should ideally be caught by the specific checks above.
     console.warn(
       `${ERROR_PREFIX} Could not determine vault, item and field for "${originalOpPath}".`
     );
@@ -486,6 +475,14 @@ function findFieldValue(
   const { fieldSpecifier, url } = resolvedIdentifier;
   const fieldSpecifierLower = fieldSpecifier.toLowerCase();
 
+  // HIGHEST PRIORITY: Special handling for URLs from session/target_url
+  // If a URL is provided in the session or as a parameter, use it directly
+  // This takes precedence over any URL fields in the item, even if cached
+  if (url && SPECIAL_URL_FIELDS.includes(fieldSpecifierLower)) {
+    log(`Using target_url from session (highest priority): ${url}`);
+    return url; // Return the URL directly if provided
+  }
+
   if (
     !SPECIAL_URL_FIELDS.includes(fieldSpecifier) &&
     (!itemObject.fields || itemObject.fields.length === 0)
@@ -548,13 +545,6 @@ function findFieldValue(
     }
   }
 
-  // Special handling for URLs first
-  // If a URL is provided in the session or as a parameter, use it directly
-  if (url && SPECIAL_URL_FIELDS.includes(fieldSpecifierLower)) {
-    log(`Using target_url from session: ${url}`);
-    return url; // Return the URL directly if provided
-  }
-
   // Attempt 1: Direct match using lookup maps
   let matchedField =
     fieldByLabel.get(fieldSpecifierLower) || fieldById.get(fieldSpecifierLower);
@@ -605,9 +595,9 @@ function findFieldValue(
     log(`Skipped section.field match for "${fieldSpecifier}"; no '.' found.`);
   }
 
-  // Attempt 3: Special handling for 'url' or 'website'
+  // Attempt 3: Special handling for 'url' or 'website' from item (only if no session URL provided)
   if (SPECIAL_URL_FIELDS.includes(fieldSpecifierLower)) {
-    log(`Attempting URL/website match for "${fieldSpecifierLower}".`);
+    log(`Attempting URL/website match from item for "${fieldSpecifierLower}".`);
     if (
       itemObject.urls &&
       Array.isArray(itemObject.urls) &&
@@ -615,11 +605,11 @@ function findFieldValue(
     ) {
       const primaryUrl = itemObject.urls.find((u) => u.primary === true);
       if (primaryUrl && primaryUrl.href) {
-        log(`Found primary URL: ${primaryUrl.href}`);
+        log(`Found primary URL from item: ${primaryUrl.href}`);
         return primaryUrl.href;
       }
       if (itemObject.urls[0] && itemObject.urls[0].href) {
-        log(`Found first URL: ${itemObject.urls[0].href}`);
+        log(`Found first URL from item: ${itemObject.urls[0].href}`);
         return itemObject.urls[0].href;
       }
       log(`No usable href in item.urls for "${fieldSpecifierLower}".`);
@@ -639,21 +629,24 @@ function findFieldValue(
  * Uses local caching to avoid duplicate API calls for identical paths within the same string.
  *
  * @param originalString - The string containing placeholders to replace
- * @param cypressEnv - Cypress environment variables (optional)
+ * @param defaultVaultNames - Default vault names to use for partial paths
+ * @param defaultItemName - Default item name to use for field-only paths
  * @param itemCache - Cache array for storing fetched items and errors
  * @param pluginOptions - Plugin configuration options
  * @returns String with placeholders replaced by secret values
  */
 async function replacePlaceholders(
   originalString: string,
-  cypressEnv: Record<string, any> | undefined, // Made cypressEnv explicitly potentially undefined
-  itemCache: CyOpCachedItemEntry[], // Added itemCache parameter
-  pluginOptions?: CyOpPluginOptions
+  defaultVaultNames: string[],
+  defaultItemName: string | undefined,
+  itemCache: CyOpCachedItemEntry[],
+  pluginOptions?: CyOpPluginOptions,
+  sessionUrl?: string
 ): Promise<string> {
   const log = debug('cyop:replace');
   let resultString = originalString;
   let match;
-  const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR; // For top-level issues in this function
+  const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
 
   // Use a Map to avoid re-fetching the same secret multiple times if it appears in multiple placeholders
   const resolvedSecretsCache = new Map<string, string | undefined>();
@@ -685,7 +678,13 @@ async function replacePlaceholders(
         `Using cached value for "${opPath}" in placeholder "${placeholder}".`
       );
     } else {
-      const resolvedIdentifier = resolveSecretPath(opPath, log, cypressEnv);
+      const resolvedIdentifier = resolveSecretPath(
+        opPath,
+        defaultVaultNames,
+        defaultItemName,
+        log,
+        sessionUrl
+      );
       if (!resolvedIdentifier) {
         // resolveSecretPath already logs a console.warn
         // If failOnError is true, we should throw here as the path itself is invalid.
@@ -703,7 +702,7 @@ async function replacePlaceholders(
       secretValue = await getAndFindSecretValue(
         resolvedIdentifier,
         log,
-        itemCache, // Pass itemCache
+        itemCache,
         pluginOptions
       );
       resolvedSecretsCache.set(opPath, secretValue); // Cache result, even if undefined
@@ -732,6 +731,7 @@ async function replacePlaceholders(
  * Main function to load 1Password secrets into Cypress environment variables.
  * Processes both direct op:// paths and placeholder strings containing {{op://...}}.
  * Implements comprehensive caching to optimize performance for repeated secret access.
+ * Handles environment variable resolution and vault discovery at the top level.
  *
  * @param config - Cypress plugin configuration options
  * @param pluginOptions - Plugin-specific configuration options
@@ -742,16 +742,16 @@ export async function loadOpSecrets(
   pluginOptions?: CyOpPluginOptions
 ): Promise<Cypress.PluginConfigOptions> {
   const log = debug('cyop:load');
-  const itemCache: CyOpCachedItemEntry[] = []; // Initialize item cache as an array
+  const itemCache: CyOpCachedItemEntry[] = [];
 
   if (!config || typeof config !== 'object') {
-    return config; // No config to process
+    return config;
   }
   const updatedConfig = { ...config };
   if (!updatedConfig.env) {
-    return config; // No env vars to process
+    return config;
   }
-  const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR; // For top-level issues in this function
+  const failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
 
   try {
     await validateCli();
@@ -760,10 +760,64 @@ export async function loadOpSecrets(
     console.error(
       `${ERROR_PREFIX} 1Password CLI validation failed. Plugin will not load secrets. Error: ${error.message}`
     );
-    return config; // Critical setup error, return original config
+    return config;
   }
 
-  log('Processing Cypress environment variables for 1Password secrets...');
+  // Resolve environment variables once at the beginning
+  const env = updatedConfig.env ?? {};
+  const vaultEnv = env.CYOP_VAULT ?? process.env.CYOP_VAULT;
+  const itemEnv = env.CYOP_ITEM ?? process.env.CYOP_ITEM;
+
+  const envSession = env.CYOP_SESSION ?? env.C8Y_SESSION;
+  const processEnvSession = process.env.CYOP_SESSION ?? process.env.C8Y_SESSION;
+  const sessionFromEnv = envSession ?? processEnvSession;
+
+  // Parse session URI for vault/item defaults
+  const sessionOp = sessionFromEnv
+    ? parseOpUri(sessionFromEnv, true, log)
+    : undefined;
+
+  // When session is provided, strictly use vault and item from session
+  let finalVaultEnv: string | string[] | undefined;
+  let finalItemEnv: string | undefined;
+
+  if (sessionOp?.vault && sessionOp?.item) {
+    // Session provides both vault and item - use them strictly
+    finalVaultEnv = sessionOp.vault;
+    finalItemEnv = sessionOp.item;
+    log(`Using vault/item from session: ${sessionOp.vault}/${sessionOp.item}`);
+  } else {
+    // No session or incomplete session - use env variables
+    finalVaultEnv = vaultEnv;
+    finalItemEnv = itemEnv;
+    log(`Using vault/item from environment: ${finalVaultEnv}/${finalItemEnv}`);
+  }
+
+  const sessionUrl = sessionOp?.url;
+
+  // Check if vault was explicitly configured (even if empty) vs not configured at all
+  const isVaultFromEnv = vaultEnv !== undefined;
+
+  // Resolve default vault names once
+  let defaultVaultNames: string[] = [];
+  let vaultDiscoveryFailed = false;
+
+  const parsedVaults = parseVaultEnvironment(finalVaultEnv);
+  if (parsedVaults.length > 0) {
+    defaultVaultNames = parsedVaults;
+  } else if (!isVaultFromEnv) {
+    // No vault configured and no session, automatically discover all available vaults
+    log('No vault configured, discovering all available vaults...');
+    defaultVaultNames = await getAllVaults(log);
+    if (defaultVaultNames.length === 0) {
+      vaultDiscoveryFailed = true;
+      console.warn(
+        `${ERROR_PREFIX} Could not automatically discover vaults and no CYOP_VAULT configured. Partial paths will fail.`
+      );
+    }
+  }
+
+  log(`Resolved vaults: [${defaultVaultNames.join(', ')}]`);
 
   for (const envVarName in updatedConfig.env) {
     if (Object.prototype.hasOwnProperty.call(updatedConfig.env, envVarName)) {
@@ -774,82 +828,77 @@ export async function loadOpSecrets(
 
       let originalValue = updatedConfig.env[envVarName];
 
-      if (typeof originalValue === 'string') {
-        originalValue = originalValue.trim();
-        if (originalValue.startsWith(OP_PROTOCOL_PREFIX)) {
-          const opPath = originalValue;
-          log(
-            `Processing direct ${OP_PROTOCOL_PREFIX} path for env var "${envVarName}": "${opPath}"`
-          );
+      if (typeof originalValue !== 'string') continue; // Skip non-string values
 
-          const resolvedIdentifier = resolveSecretPath(
-            opPath,
-            log,
-            updatedConfig.env
-          );
-          if (!resolvedIdentifier) {
-            // resolveSecretPath already logs a console.warn
-            // If failOnError is true, we should throw here as the path itself is invalid.
-            if (failOnError) {
-              throw new Error(
-                `${ERROR_PREFIX} Cannot resolve path for env var "${envVarName}" (path: "${opPath}").`
-              );
-            }
-            continue; // Skip this env var if path resolution failed and not throwing
-          }
+      originalValue = originalValue.trim();
+      if (originalValue.startsWith(OP_PROTOCOL_PREFIX)) {
+        const opPath = originalValue;
+        log(
+          `Processing direct ${OP_PROTOCOL_PREFIX} path for env var "${envVarName}": "${opPath}"`
+        );
 
-          // getAndFindSecretValue handles its own logging and failOnError for fetching/finding issues
-          const secretValue = await getAndFindSecretValue(
-            resolvedIdentifier,
-            log,
-            itemCache, // Pass itemCache
-            pluginOptions
-          );
-
-          if (secretValue !== null && secretValue !== undefined) {
-            updatedConfig.env[envVarName] = secretValue;
-            log(
-              `Env var "${envVarName}" updated with secret from "${opPath}".`
-            );
-          } else {
-            // If secretValue is undefined here, it means getAndFindSecretValue returned undefined
-            // (and failOnError was false, so it logged a warning).
-            // If failOnError is false, we log that the env var was not updated.
-            if (!failOnError) {
-              log(
-                `Env var "${envVarName}" (path "${opPath}") could not be resolved to a value. Variable not updated.`
-              );
-            }
-            // If failOnError is true, an error would have been thrown by getAndFindSecretValue.
-          }
-        } else if (placeholderRegex.exec(originalValue) !== null) {
-          log(
-            `Processing string with placeholders for env var "${envVarName}".`
-          );
-          // replacePlaceholders calls getAndFindSecretValue internally and handles its own logging/failOnError per placeholder.
-          // If replacePlaceholders encounters an issue and failOnError is true, it will throw.
-          try {
-            updatedConfig.env[envVarName] = await replacePlaceholders(
-              originalValue,
-              updatedConfig.env,
-              itemCache, // Pass itemCache
-              pluginOptions
-            );
-            log(
-              `Env var "${envVarName}" updated after placeholder replacement.`
-            );
-          } catch (error: any) {
-            // If replacePlaceholders throws (because failOnError is true for an issue within it),
-            // we need to decide if loadOpSecrets itself should continue or rethrow.
-            // For now, if failOnError is true at this level, we rethrow.
-            if (failOnError) throw error;
-            // If failOnError is false at this level, the error from replacePlaceholders (if it threw)
-            // would have been caught if its internal failOnError was also true. If its internal was false,
-            // it would have logged. So, if we reach here and failOnError is false, we just log the problem.
+        const resolvedIdentifier = resolveSecretPath(
+          opPath,
+          defaultVaultNames,
+          finalItemEnv,
+          log,
+          sessionUrl
+        );
+        if (!resolvedIdentifier) {
+          // resolveSecretPath already logs a console.warn, but if vault discovery failed
+          // and we have a partial path, we need to show additional context
+          const pathContent = opPath.substring(OP_PROTOCOL_LENGTH);
+          const pathParts = pathContent.split('/');
+          if (
+            vaultDiscoveryFailed &&
+            (pathParts.length === 2 || pathParts.length === 1)
+          ) {
             console.warn(
-              `${ERROR_PREFIX} Error processing placeholders for env var "${envVarName}": ${error.message}. Variable may be partially updated or unchanged.`
+              `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${opPath}" (${OP_PROTOCOL_PREFIX}${pathParts.length === 2 ? 'item/field' : 'field'}) and vault discovery failed.`
             );
           }
+          if (failOnError) {
+            throw new Error(
+              `${ERROR_PREFIX} Cannot resolve path for env var "${envVarName}" (path: "${opPath}").`
+            );
+          }
+          continue;
+        }
+
+        const secretValue = await getAndFindSecretValue(
+          resolvedIdentifier,
+          log,
+          itemCache,
+          pluginOptions
+        );
+
+        if (secretValue !== null && secretValue !== undefined) {
+          updatedConfig.env[envVarName] = secretValue;
+          log(`Env var "${envVarName}" updated with secret from "${opPath}".`);
+        } else {
+          if (!failOnError) {
+            log(
+              `Env var "${envVarName}" (path "${opPath}") could not be resolved to a value. Variable not updated.`
+            );
+          }
+        }
+      } else if (placeholderRegex.exec(originalValue) !== null) {
+        log(`Processing string with placeholders for env var "${envVarName}".`);
+        try {
+          updatedConfig.env[envVarName] = await replacePlaceholders(
+            originalValue,
+            defaultVaultNames,
+            finalItemEnv,
+            itemCache,
+            pluginOptions,
+            sessionUrl
+          );
+          log(`Env var "${envVarName}" updated after placeholder replacement.`);
+        } catch (error: any) {
+          if (failOnError) throw error;
+          console.warn(
+            `${ERROR_PREFIX} Error processing placeholders for env var "${envVarName}": ${error.message}. Variable may be partially updated or unchanged.`
+          );
         }
       }
     }
