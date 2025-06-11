@@ -147,7 +147,7 @@ export function parseOpUri(
   const isValid =
     pathParts.length >= MIN_PATH_PARTS &&
     pathParts.length <= MAX_PATH_PARTS &&
-    pathParts.every((p) => p?.trim()?.length ?? 0 > 0);
+    pathParts.every((p) => (p?.trim()?.length ?? 0) > 0);
 
   if (!isValid) {
     log(
