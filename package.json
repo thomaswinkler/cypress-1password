@@ -9,11 +9,11 @@
     "format:check": "prettier --check src/**/*.ts",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "package": "rimraf dist/ && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
+    "package": "npm run clean && npm run build && cp ./package.json ./dist/ && cp ./README.md ./dist/",
     "release": "semantic-release",
     "release:test": "semantic-release --debug --dry-run --no-ci --repositoryUrl git@github.com:thomaswinkler/cypress-1password.git",
     "test": "jest",
-    "yalc:publish": "cd dist/ && npx yalc publish && cd .."
+    "yalc:publish": "npm run package && cd dist/ && npx yalc publish && cd .."
   },
   "keywords": [
     "cypress",
