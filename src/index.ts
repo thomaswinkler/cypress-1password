@@ -256,7 +256,7 @@ function resolveSecretPath(
 
   const opUri = parseOpUri(originalOpPath, false, log);
   if (!opUri) {
-    console.warn(`${ERROR_PREFIX} Invalid path: "${originalOpPath}.`);
+    console.warn(`${ERROR_PREFIX} Invalid path: "${originalOpPath}".`);
     return null;
   }
 
