@@ -58,6 +58,7 @@ interface CyOpResolvedSecretIdentifier {
   itemName: string;
   fieldSpecifier: string;
   originalPath: string;
+  url?: string;
 }
 
 // Define types for cached items
@@ -112,8 +113,94 @@ function parseVaultEnvironment(
 }
 
 /**
+ * Parses an op:// URI into its component parts.
+ * Supports various formats: op://vault/item/field, op://vault/item, op://item/field, op://field
+ * Also supports query parameters like ?target_url=encoded_url
+ *
+ * @param opUri - The op:// URI to parse
+ * @param isSession - Whether this is a session URI (op://vault/item format)
+ * @param log - Debug logger instance
+ * @returns Object with parsed components or null if invalid
+ */
+export function parseOpUri(
+  opUri: string,
+  isSession: boolean,
+  log: debug.Debugger
+): { vault?: string; item?: string; field?: string; url?: string } | null {
+  if (!opUri || !opUri.startsWith(OP_PROTOCOL_PREFIX)) {
+    log(
+      `Invalid op:// URI format: "${opUri}". Must start with ${OP_PROTOCOL_PREFIX}`
+    );
+    return null;
+  }
+
+  const pathContent = opUri.substring(OP_PROTOCOL_LENGTH);
+  if (!pathContent) {
+    log(`Invalid op:// URI: "${opUri}". Empty after ${OP_PROTOCOL_PREFIX}`);
+    return null;
+  }
+
+  // Separate path from query parameters
+  const [pathOnly, queryString] = pathContent.split('?', 2);
+
+  let pathParts: (string | undefined)[] = pathOnly.split('/');
+  const isValid =
+    pathParts.length >= MIN_PATH_PARTS &&
+    pathParts.length <= MAX_PATH_PARTS &&
+    pathParts.every((p) => p?.trim()?.length ?? 0 > 0);
+
+  if (!isValid) {
+    log(
+      `Invalid op:// URI format: "${opUri}". Path parts: [${pathParts.join(', ')}]`
+    );
+    return null;
+  }
+
+  if (pathParts.length === 1)
+    pathParts = [undefined, undefined, pathParts[0]]; // Handle single field case (op://field)
+  else if (pathParts.length === 2 && !isSession)
+    pathParts = [undefined, pathParts[0], pathParts[1]]; // Handle item/field case (op://item/field)
+  else if (pathParts.length === 2 && isSession)
+    pathParts = [pathParts[0], pathParts[1], undefined]; // Handle session URI case (op://vault/item)
+
+  const [vault, item, field] = pathParts;
+
+  // Parse query parameters
+  let url: string | undefined;
+  if (queryString) {
+    const params = new URLSearchParams(queryString);
+    const targetUrl = params.get('target_url');
+    if (targetUrl) {
+      try {
+        // URL decode the target_url parameter
+        const decodedUrl = decodeURIComponent(targetUrl);
+
+        // Make it absolute if it doesn't have a scheme
+        if (decodedUrl && !decodedUrl.includes('://')) {
+          url = `https://${decodedUrl}`;
+        } else {
+          url = decodedUrl;
+        }
+      } catch (error) {
+        log(
+          `Failed to decode target_url parameter: "${targetUrl}". Error: ${error}`
+        );
+      }
+    }
+  }
+
+  return {
+    ...(vault && { vault: vault.trim() }),
+    ...(item && { item: item.trim() }),
+    ...(field && { field: field.trim() }),
+    ...(url && { url }),
+  };
+}
+
+/**
  * Resolves a 1Password secret path into its component parts (vault, item, field).
  * Supports full paths (op://vault/item/field) and partial paths using CYOP_VAULT and CYOP_ITEM.
+ * Also supports session URIs from C8Y_SESSION or CYOP_SESSION (op://vault/item format).
  * CYOP_VAULT can be a comma-separated list or array of vault names/IDs to check in order.
  *
  * @param originalOpPath - The original op:// path to resolve
@@ -128,18 +215,36 @@ function resolveSecretPath(
 ): CyOpResolvedSecretIdentifier | null {
   const vaultFromCypressEnv = cypressEnv?.CYOP_VAULT;
   const itemFromCypressEnv = cypressEnv?.CYOP_ITEM;
+  const sessionFromCypressEnv =
+    cypressEnv?.CYOP_SESSION || cypressEnv?.C8Y_SESSION;
 
-  const vaultEnv =
+  let vaultEnv =
     vaultFromCypressEnv !== undefined
       ? vaultFromCypressEnv
       : process.env.CYOP_VAULT;
-  const itemEnv =
+  let itemEnv =
     typeof itemFromCypressEnv === 'string'
       ? itemFromCypressEnv
       : process.env.CYOP_ITEM;
+  const sessionEnv =
+    typeof sessionFromCypressEnv === 'string'
+      ? sessionFromCypressEnv
+      : (process.env.CYOP_SESSION ?? process.env.C8Y_SESSION);
+
+  let url: string | undefined = undefined;
+  if (sessionEnv) {
+    const sessionOpObject = parseOpUri(sessionEnv, true, log);
+    if (!itemEnv && sessionOpObject?.item) {
+      itemEnv = sessionOpObject.item; // Use item from session if not set
+    }
+    if (!vaultEnv && sessionOpObject?.vault) {
+      vaultEnv = sessionOpObject.vault;
+    }
+    url = sessionOpObject?.url; // Use URL from session if available
+  }
 
   log(
-    `Resolving op path: "${originalOpPath}" (CYOP_VAULT: "${JSON.stringify(vaultEnv)}", CYOP_ITEM: "${itemEnv}")`
+    `Resolving op path: "${originalOpPath}" (CYOP_VAULT: "${JSON.stringify(vaultEnv)}", CYOP_ITEM: "${itemEnv}", SESSION: "${sessionEnv || 'N/A'}")`
   );
 
   if (!originalOpPath || !originalOpPath.startsWith(OP_PROTOCOL_PREFIX)) {
@@ -149,70 +254,31 @@ function resolveSecretPath(
     return null;
   }
 
-  const pathContent = originalOpPath.substring(OP_PROTOCOL_LENGTH);
-  if (!pathContent) {
+  const opUri = parseOpUri(originalOpPath, false, log);
+  if (!opUri) {
+    console.warn(`${ERROR_PREFIX} Invalid path: "${originalOpPath}.`);
+    return null;
+  }
+
+  const vaultNames: string[] | undefined = opUri?.vault
+    ? [opUri.vault]
+    : parseVaultEnvironment(vaultEnv);
+  if (!vaultNames || vaultNames.length === 0) {
     console.warn(
-      `${ERROR_PREFIX} Invalid path: "${originalOpPath}". Empty after "${OP_PROTOCOL_PREFIX}".`
+      `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
     );
     return null;
   }
-  const pathParts = pathContent.split('/');
-
-  let vaultNames: string[] = [];
-  let itemName: string | undefined;
-  let fieldSpecifier: string | undefined;
-
-  if (
-    pathParts.length === MAX_PATH_PARTS &&
-    pathParts.every((p) => p.length > 0)
-  ) {
-    vaultNames = [pathParts[0]];
-    itemName = pathParts[1];
-    fieldSpecifier = pathParts[2];
-    log(
-      `Path "${originalOpPath}" -> Full path. Vault="${vaultNames[0]}", Item="${itemName}", Field="${fieldSpecifier}".`
-    );
-  } else if (pathParts.length === 2 && pathParts.every((p) => p.length > 0)) {
-    const parsedVaults = parseVaultEnvironment(vaultEnv);
-    if (parsedVaults.length === 0) {
-      console.warn(
-        `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
-      );
-      return null;
-    }
-    vaultNames = parsedVaults;
-    itemName = pathParts[0];
-    fieldSpecifier = pathParts[1];
-    log(
-      `Path "${originalOpPath}" -> Partial path (item/field). Vaults="${vaultNames.join(', ')}" (from CYOP_VAULT), Item="${itemName}", Field="${fieldSpecifier}".`
-    );
-  } else if (pathParts.length === MIN_PATH_PARTS && pathParts[0].length > 0) {
-    const parsedVaults = parseVaultEnvironment(vaultEnv);
-    if (parsedVaults.length === 0 || !itemEnv) {
-      console.warn(
-        `${ERROR_PREFIX} CYOP_VAULT and/or CYOP_ITEM missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}field).`
-      );
-      return null;
-    }
-    vaultNames = parsedVaults;
-    itemName = itemEnv;
-    fieldSpecifier = pathParts[0];
-    log(
-      `Path "${originalOpPath}" -> Partial path (field). Vaults="${vaultNames.join(', ')}" (from CYOP_VAULT), Item="${itemName}" (from CYOP_ITEM), Field="${fieldSpecifier}".`
-    );
-  } else {
-    console.warn(
-      `${ERROR_PREFIX} Path "${originalOpPath}" has unsupported segment structure: [${pathParts.join(
-        ', '
-      )}]`
-    );
-    return null;
+  const itemName = opUri?.item ?? itemEnv;
+  const fieldSpecifier = opUri?.field;
+  if (opUri?.url) {
+    url = opUri.url; // Use URL from opUri if available
   }
 
   if (vaultNames.length === 0 || !itemName || !fieldSpecifier) {
     // This case should ideally be caught by the specific checks above.
     console.warn(
-      `${ERROR_PREFIX} Could not fully determine vault, item, and field for "${originalOpPath}".`
+      `${ERROR_PREFIX} Could not determine vault, item and field for "${originalOpPath}".`
     );
     return null;
   }
@@ -222,6 +288,7 @@ function resolveSecretPath(
     itemName,
     fieldSpecifier,
     originalPath: originalOpPath,
+    url,
   };
 }
 
@@ -282,7 +349,7 @@ async function getAndFindSecretValue(
         log(
           `Using cached item "${cachedItem.title}" (ID: ${cachedItem.id}, vault "${cachedItem.vault.name}") for path "${originalPath}".`
         );
-        const secretValue = findFieldValue(cachedItem, fieldSpecifier, log);
+        const secretValue = findFieldValue(cachedItem, resolvedIdentifier, log);
         if (secretValue !== null && secretValue !== undefined) {
           log(`Success: Found value for "${originalPath}" from cached item.`);
           return secretValue;
@@ -334,7 +401,7 @@ async function getAndFindSecretValue(
 
       const secretValue = findFieldValue(
         fetchedItemDataAsItem,
-        fieldSpecifier,
+        resolvedIdentifier,
         log
       );
 
@@ -413,10 +480,12 @@ async function getAndFindSecretValue(
  */
 function findFieldValue(
   itemObject: OpJsItem, // Expect OpJsItem directly
-  fieldSpecifier: string,
+  resolvedIdentifier: CyOpResolvedSecretIdentifier,
   log: debug.Debugger // Added for logging
 ): string | undefined {
+  const { fieldSpecifier, url } = resolvedIdentifier;
   const fieldSpecifierLower = fieldSpecifier.toLowerCase();
+
   if (
     !SPECIAL_URL_FIELDS.includes(fieldSpecifier) &&
     (!itemObject.fields || itemObject.fields.length === 0)
@@ -477,6 +546,13 @@ function findFieldValue(
         fieldAsValueField
       );
     }
+  }
+
+  // Special handling for URLs first
+  // If a URL is provided in the session or as a parameter, use it directly
+  if (url && SPECIAL_URL_FIELDS.includes(fieldSpecifierLower)) {
+    log(`Using target_url from session: ${url}`);
+    return url; // Return the URL directly if provided
   }
 
   // Attempt 1: Direct match using lookup maps
@@ -691,6 +767,11 @@ export async function loadOpSecrets(
 
   for (const envVarName in updatedConfig.env) {
     if (Object.prototype.hasOwnProperty.call(updatedConfig.env, envVarName)) {
+      // Skip session URIs - they are not secrets to resolve, but sources of vault/item info
+      if (envVarName === 'C8Y_SESSION' || envVarName === 'CYOP_SESSION') {
+        continue;
+      }
+
       let originalValue = updatedConfig.env[envVarName];
 
       if (typeof originalValue === 'string') {
