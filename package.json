@@ -1,6 +1,6 @@
 {
   "name": "cypress-1password",
-  "version": "1.2.8",
+  "version": "1.0.0",
   "description": "Cypress plugin to load secrets from 1Password",
   "scripts": {
     "build": "tsc -b -v && rollup -c rollup.config.mjs",
