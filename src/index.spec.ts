@@ -1,7 +1,8 @@
 /// <reference types="jest" />
 
-import { loadOpSecrets } from './index';
+import { loadOpSecrets, parseOpUri } from './index';
 import { item, validateCli } from '@1password/op-js';
+import debug from 'debug';
 
 // Mock @1password/op-js
 jest.mock('@1password/op-js', () => ({
@@ -566,7 +567,7 @@ describe('loadOpSecrets', () => {
       });
       expect(updatedConfig.env.MY_SECRET).toBe('op://field');
       expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] CYOP_VAULT and/or CYOP_ITEM missing for partial path "op://field" (op://field).'
+        '[cypress-1password] Could not determine vault, item and field for "op://field".'
       );
       console.warn = originalWarn;
     });
@@ -1123,6 +1124,666 @@ describe('loadOpSecrets', () => {
       });
 
       console.error = originalError;
+    });
+  });
+
+  describe('Session URI Support', () => {
+    beforeEach(() => {
+      // Clear session environment variables
+      delete process.env.C8Y_SESSION;
+      delete process.env.CYOP_SESSION;
+    });
+
+    it('should use C8Y_SESSION for field-only path when CYOP_VAULT and CYOP_ITEM are not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION: 'op://TestVault/TestItem',
+          MY_FIELD: 'op://password',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'secretPassword123' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_FIELD).toBe('secretPassword123');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use target_url for url/website from CYOP_SESSION', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION: 'op://TestVault/TestItem?target_url=https://example.com',
+          C8Y_BASEURL: 'op://url',
+          C8Y_HOST: 'op://website',
+        },
+      };
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'secretPassword123' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.C8Y_BASEURL).toBe('https://example.com');
+      expect(updatedConfig.env.C8Y_HOST).toBe('https://example.com');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use session URI for item/field path when CYOP_VAULT is not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_CREDENTIAL: 'op://MyItem/username',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'MyItem',
+        title: 'My Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'user', label: 'username', value: 'myuser' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_CREDENTIAL).toBe('myuser');
+      expect(mockItemGet).toHaveBeenCalledWith('MyItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should prioritize CYOP_VAULT over session URI', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'PriorityVault',
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://TestItem/password',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'PriorityVault', name: 'Priority Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'priorityPassword' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('priorityPassword');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'PriorityVault',
+      });
+    });
+
+    it('should prioritize CYOP_ITEM over session URI', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'PriorityVault',
+          CYOP_ITEM: 'PriorityItem',
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'PriorityItem',
+        title: 'Priority Item',
+        vault: { id: 'PriorityVault', name: 'Priority Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'priorityToken' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('priorityToken');
+      expect(mockItemGet).toHaveBeenCalledWith('PriorityItem', {
+        vault: 'PriorityVault',
+      });
+    });
+
+    it('should use target_url over item url for url/website from CYOP_SESSION', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION:
+            'op://TestVault/TestItem?target_url=https%3A%2F%2Fexample.com',
+          C8Y_BASEURL: 'op://url',
+          C8Y_HOST: 'op://website',
+        },
+      };
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [
+          {
+            id: 'pwd',
+            label: 'password',
+            value: 'secretPassword123',
+            url: 'https://myexample.com',
+          },
+        ],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.C8Y_BASEURL).toBe('https://example.com');
+      expect(updatedConfig.env.C8Y_HOST).toBe('https://example.com');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use CYOP_SESSION for field-only path when CYOP_VAULT and CYOP_ITEM are not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'sessionToken456' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('sessionToken456');
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should warn if session URI is invalid format', async () => {
+      const originalWarn = console.warn;
+      console.warn = jest.fn();
+
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://invalid', // Missing item part
+          MY_FIELD: 'op://password',
+        },
+      };
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+        failOnError: false,
+      });
+      expect(updatedConfig.env.MY_FIELD).toBe('op://password');
+      expect(console.warn).toHaveBeenCalledWith(
+        '[cypress-1password] CYOP_VAULT missing for partial path "op://password" (op://item/field).'
+      );
+      expect(mockItemGet).not.toHaveBeenCalled();
+
+      console.warn = originalWarn;
+    });
+
+    it('should support both C8Y_SESSION and CYOP_SESSION with C8Y_SESSION taking precedence', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://CYOPVault/CYOPItem', // takes precedence
+          C8Y_SESSION: 'op://C8YVault/C8YItem',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'C8YItem',
+        title: 'C8Y Item',
+        vault: { id: 'C8YVault', name: 'C8Y Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'c8yToken' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('c8yToken');
+      expect(mockItemGet).toHaveBeenCalledWith('CYOPItem', {
+        vault: 'CYOPVault',
+      });
+    });
+
+    it('should work with session URI in placeholders', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          API_URL: 'https://api.example.com/{{op://token}}',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'apiToken123' }],
+      });
+
+      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      expect(updatedConfig.env.API_URL).toBe(
+        'https://api.example.com/apiToken123'
+      );
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+  });
+});
+
+describe('parseOpUri', () => {
+  // Create a mock debug function that implements the debug.Debugger interface
+  const mockLogFn = jest.fn();
+  const mockLog = mockLogFn as any as debug.Debugger;
+
+  // Add required properties for debug.Debugger interface
+  mockLog.enabled = true;
+  mockLog.color = '';
+  mockLog.diff = 0;
+  mockLog.log = jest.fn();
+  mockLog.namespace = 'test';
+  mockLog.destroy = jest.fn();
+  mockLog.extend = jest.fn();
+
+  beforeEach(() => {
+    mockLogFn.mockClear();
+  });
+
+  describe('Valid URI formats', () => {
+    it('should parse full three-part URI (op://vault/item/field)', () => {
+      const expectedResult = {
+        vault: 'MyVault',
+        item: 'MyItem',
+        field: 'MyField',
+      };
+      const result = parseOpUri('op://MyVault/MyItem/MyField', false, mockLog);
+      expect(result).toEqual(expectedResult);
+      const resultTrue = parseOpUri(
+        'op://MyVault/MyItem/MyField',
+        true,
+        mockLog
+      );
+      expect(resultTrue).toEqual(expectedResult);
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should parse two-part URI (op://vault/item)', () => {
+      const result = parseOpUri('op://MyItem/MyField', false, mockLog);
+
+      expect(result).toEqual({
+        item: 'MyItem',
+        field: 'MyField',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should parse single-part URI (op://field)', () => {
+      const result = parseOpUri('op://MyField', false, mockLog);
+
+      expect(result).toEqual({
+        field: 'MyField',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle URIs with spaces in parts', () => {
+      const expectedResult = {
+        vault: 'My Vault',
+        item: 'My Item',
+        field: 'My Field',
+      };
+      const result = parseOpUri(
+        'op://My Vault/My Item/My Field',
+        false,
+        mockLog
+      );
+      expect(result).toEqual(expectedResult);
+      const resultTrue = parseOpUri(
+        'op://My Vault/My Item/My Field',
+        true,
+        mockLog
+      );
+      expect(resultTrue).toEqual(expectedResult);
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle URIs with special characters', () => {
+      const expectedResult = {
+        vault: 'Vault-1',
+        item: 'Item_2',
+        field: 'Field.3',
+      };
+      const result = parseOpUri('op://Vault-1/Item_2/Field.3', false, mockLog);
+      expect(result).toEqual(expectedResult);
+      const resultTrue = parseOpUri(
+        'op://Vault-1/Item_2/Field.3',
+        true,
+        mockLog
+      );
+      expect(resultTrue).toEqual(expectedResult);
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Invalid URI formats', () => {
+    it('should return null for empty string', () => {
+      const result = parseOpUri('', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "". Must start with op://'
+      );
+    });
+
+    it('should return null for null input', () => {
+      const result = parseOpUri(null as any, false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "null". Must start with op://'
+      );
+    });
+
+    it('should return null for undefined input', () => {
+      const result = parseOpUri(undefined as any, false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "undefined". Must start with op://'
+      );
+    });
+
+    it('should return null for URI without op:// prefix', () => {
+      const result = parseOpUri('vault/item/field', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "vault/item/field". Must start with op://'
+      );
+    });
+
+    it('should return null for URI with wrong protocol', () => {
+      const result = parseOpUri('http://vault/item/field', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "http://vault/item/field". Must start with op://'
+      );
+    });
+
+    it('should return null for URI with only protocol', () => {
+      const result = parseOpUri('op://', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI: "op://". Empty after op://'
+      );
+    });
+
+    it('should return null for URI with empty parts', () => {
+      const result = parseOpUri('op://vault//field', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op://vault//field". Path parts: [vault, , field]'
+      );
+    });
+
+    it('should return null for URI with only empty parts', () => {
+      const result = parseOpUri('op://///', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op://///". Path parts: [, , , ]'
+      );
+    });
+
+    it('should return null for URI with too many parts (more than 3)', () => {
+      const result = parseOpUri('op://vault/item/field/extra', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op://vault/item/field/extra". Path parts: [vault, item, field, extra]'
+      );
+    });
+
+    it('should return null for URI with trailing slash', () => {
+      const result = parseOpUri('op://vault/item/field/', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op://vault/item/field/". Path parts: [vault, item, field, ]'
+      );
+    });
+
+    it('should return null for URI with leading slash in path', () => {
+      const result = parseOpUri('op:///vault/item/field', false, mockLog);
+
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op:///vault/item/field". Path parts: [, vault, item, field]'
+      );
+    });
+
+    it('should return null for URI with only whitespace after protocol', () => {
+      const result = parseOpUri('op://   ', false, mockLog);
+      expect(result).toBeNull();
+      expect(mockLog).toHaveBeenCalledWith(
+        'Invalid op:// URI format: "op://   ". Path parts: [   ]'
+      );
+    });
+  });
+
+  describe('Edge cases', () => {
+    it('should handle URI with numeric parts', () => {
+      const result = parseOpUri('op://123/456/789', false, mockLog);
+
+      expect(result).toEqual({
+        vault: '123',
+        item: '456',
+        field: '789',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle URI with mixed alphanumeric and symbols', () => {
+      const result = parseOpUri(
+        'op://vault@123/item#456/field$789',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault@123',
+        item: 'item#456',
+        field: 'field$789',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+    it('should handle very long part names', () => {
+      const longName = 'a'.repeat(100);
+      const result = parseOpUri(
+        `op://${longName}/${longName}/${longName}`,
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: longName,
+        item: longName,
+        field: longName,
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle URI with Unicode characters', () => {
+      const result = parseOpUri('op://🔐Vault/📁Item/🔑Field', false, mockLog);
+
+      expect(result).toEqual({
+        vault: '🔐Vault',
+        item: '📁Item',
+        field: '🔑Field',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle single character parts', () => {
+      const result = parseOpUri('op://v/i/f', false, mockLog);
+
+      expect(result).toEqual({
+        vault: 'v',
+        item: 'i',
+        field: 'f',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('URL parameter parsing', () => {
+    it('should parse target_url parameter and URL decode it', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=example.com',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+        url: 'https://example.com',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should parse target_url parameter with encoded URL', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=https%3A%2F%2Fexample.com%2Fpath',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+        url: 'https://example.com/path',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle target_url with existing scheme', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=http%3A%2F%2Fexample.com',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+        url: 'http://example.com',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle multiple query parameters', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=example.com&other=value',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+        url: 'https://example.com',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should work with partial URIs and target_url', () => {
+      const result = parseOpUri(
+        'op://field?target_url=example.com',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        field: 'field',
+        url: 'https://example.com',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle empty target_url parameter', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle malformed URL encoding gracefully', () => {
+      const result = parseOpUri(
+        'op://vault/item/field?target_url=%invalid%',
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+      });
+      expect(mockLogFn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to decode target_url parameter')
+      );
+    });
+
+    it('should work with session URIs and target_url', () => {
+      const result = parseOpUri(
+        'op://vault/item?target_url=example.com',
+        true,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        url: 'https://example.com',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
+    });
+
+    it('should handle complex URLs with special characters', () => {
+      const encodedUrl = encodeURIComponent(
+        'https://example.com/path?param=value&other=test#fragment'
+      );
+      const result = parseOpUri(
+        `op://vault/item/field?target_url=${encodedUrl}`,
+        false,
+        mockLog
+      );
+
+      expect(result).toEqual({
+        vault: 'vault',
+        item: 'item',
+        field: 'field',
+        url: 'https://example.com/path?param=value&other=test#fragment',
+      });
+      expect(mockLogFn).not.toHaveBeenCalled();
     });
   });
 });
