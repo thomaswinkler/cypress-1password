@@ -3,6 +3,7 @@ import {
   OP_PROTOCOL_LENGTH,
   MIN_PATH_PARTS,
   MAX_PATH_PARTS,
+  TARGET_URL_KEY,
 } from './constants';
 
 import debug from 'debug';
@@ -76,7 +77,7 @@ export function parseOpUri(opUri: string, isSession: boolean): OpUri | null {
   let url: string | undefined;
   if (queryString) {
     const params = new URLSearchParams(queryString);
-    const targetUrl = params.get('target_url');
+    const targetUrl = params.get(TARGET_URL_KEY);
     if (targetUrl) {
       try {
         // URL decode the target_url parameter
