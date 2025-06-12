@@ -12,6 +12,7 @@ import {
   DEFAULT_FAIL_ON_ERROR,
   SPECIAL_URL_FIELDS,
   placeholderRegex,
+  TARGET_URL_KEY,
 } from './constants';
 
 // Type definitions and interfaces
@@ -29,7 +30,7 @@ interface CyOpResolvedSecretIdentifier {
   itemName: string;
   fieldSpecifier: string;
   originalPath: string;
-  target_url?: string;
+  [TARGET_URL_KEY]?: string;
 }
 
 // Define types for cached items
@@ -175,7 +176,7 @@ export class OpResolver {
       itemName,
       fieldSpecifier,
       originalPath: originalOpPath,
-      target_url: url,
+      [TARGET_URL_KEY]: url,
     };
   }
 
@@ -187,7 +188,7 @@ export class OpResolver {
     itemObject: OpJsItem,
     resolvedIdentifier: CyOpResolvedSecretIdentifier
   ): string | undefined {
-    const { fieldSpecifier, target_url: url } = resolvedIdentifier;
+    const { fieldSpecifier, [TARGET_URL_KEY]: url } = resolvedIdentifier;
     const fieldSpecifierLower = fieldSpecifier.toLowerCase();
 
     if (

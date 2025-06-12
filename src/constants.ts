@@ -19,3 +19,6 @@ export const placeholderRegex = new RegExp(
   `{{\\s{0,20}(${OP_PROTOCOL_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^}]+?)\\s{0,20}}}`,
   'g'
 );
+
+// Target URL key constant
+export const TARGET_URL_KEY = 'target_url';
