@@ -5,7 +5,7 @@ import {
   Item as OpJsItem,
   ValueField as OpJsValueField,
 } from '@1password/op-js';
-import { parseOpUri, OP_PROTOCOL_PREFIX, type OpUri } from './opUri';
+import { parseOpUri, OP_PROTOCOL_PREFIX } from './opUri';
 import {
   SECTION_FIELD_SEPARATOR,
   ERROR_PREFIX,
@@ -112,15 +112,6 @@ export class OpResolver {
   }
 
   /**
-   * Parses an op:// URI into its component parts.
-   * Supports various formats: op://vault/item/field, op://vault/item, op://item/field, op://field
-   * Also supports query parameters like ?target_url=encoded_url
-   */
-  private parseOpUri(opUri: string, isSession: boolean): OpUri | null {
-    return parseOpUri(opUri, isSession);
-  }
-
-  /**
    * Resolves a 1Password secret path into its component parts (vault, item, field).
    * Supports full paths (op://vault/item/field) and partial paths using CYOP_VAULT and CYOP_ITEM.
    * Also supports session URIs from C8Y_SESSION or CYOP_SESSION (op://vault/item format).
@@ -141,7 +132,7 @@ export class OpResolver {
 
     // If session is provided and valid, always use vault/item from session
     if (typeof sessionEnv === 'string') {
-      const sessionOp = this.parseOpUri(sessionEnv, true);
+      const sessionOp = parseOpUri(sessionEnv, true);
       if (sessionOp?.vault && sessionOp?.item) {
         vaultEnv = sessionOp.vault;
         itemEnv = sessionOp.item;
@@ -153,16 +144,9 @@ export class OpResolver {
       }
     }
 
-    if (!originalOpPath || !originalOpPath.startsWith(OP_PROTOCOL_PREFIX)) {
-      this.log(
-        `${ERROR_PREFIX} Invalid path: "${originalOpPath}". Must be an ${OP_PROTOCOL_PREFIX} URI.`
-      );
-      return null;
-    }
-
-    const opUri = this.parseOpUri(originalOpPath, false);
+    const opUri = parseOpUri(originalOpPath, false);
     if (!opUri) {
-      this.log(`${ERROR_PREFIX} Invalid path: "${originalOpPath}".`);
+      this.log(`${ERROR_PREFIX} Invalid op:// uri: "${originalOpPath}".`);
       return null;
     }
 
@@ -171,7 +155,7 @@ export class OpResolver {
       : this.parseVaultEnvironment(vaultEnv);
     if (!vaultNames.length) {
       this.log(
-        `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
+        `${ERROR_PREFIX} CYOP_VAULT missing for partial uri "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
       );
       return null;
     }
@@ -578,27 +562,27 @@ export class OpResolver {
   }
 
   /**
-   * Resolves a single op:// path to its secret value.
-   */
-  async resolveOpPath(opPath: string): Promise<string | undefined> {
-    const resolvedIdentifier = this.resolveSecretPath(opPath);
-    if (!resolvedIdentifier) {
-      if (this.failOnError) {
-        throw new Error(`${ERROR_PREFIX} Cannot resolve path "${opPath}".`);
-      }
-      return undefined;
-    }
-
-    return await this.getAndFindSecretValue(resolvedIdentifier);
-  }
-
-  /**
    * Clears all caches for a fresh start.
    */
   clearCaches(): void {
     this.itemCache = [];
     this.resolvedSecretsCache.clear();
     this.log('Cleared all caches and cached items.');
+  }
+
+  /**
+   * Resolves a single op:// uri to its secret value.
+   */
+  async resolveOpUri(opUri: string): Promise<string | undefined> {
+    const resolvedIdentifier = this.resolveSecretPath(opUri);
+    if (!resolvedIdentifier) {
+      if (this.failOnError) {
+        throw new Error(`${ERROR_PREFIX} Cannot resolve path "${opUri}".`);
+      }
+      return undefined;
+    }
+
+    return await this.getAndFindSecretValue(resolvedIdentifier);
   }
 
   /**
@@ -646,7 +630,7 @@ export class OpResolver {
             );
 
             try {
-              const secretValue = await this.resolveOpPath(opPath);
+              const secretValue = await this.resolveOpUri(opPath);
               if (secretValue !== null && secretValue !== undefined) {
                 updatedConfig.env[envVarName] = secretValue;
                 log(
