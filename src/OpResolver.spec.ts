@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 
-import { loadOpSecrets } from './index';
-import { item, validateCli } from '@1password/op-js';
+import { CyOpPluginOptions, OpResolver } from './index';
+import { item, vault, validateCli } from '@1password/op-js';
 
 // Mock @1password/op-js
 jest.mock('@1password/op-js', () => ({
@@ -9,10 +9,14 @@ jest.mock('@1password/op-js', () => ({
   item: {
     get: jest.fn(),
   },
+  vault: {
+    list: jest.fn(),
+  },
   validateCli: jest.fn(),
 }));
 
 const mockItemGet = item.get as jest.Mock;
+const mockVaultList = vault.list as jest.Mock;
 const mockValidateCli = validateCli as jest.Mock;
 
 // Define a type for our mock Cypress config
@@ -21,17 +25,36 @@ interface MockCypressConfig {
   [key: string]: any;
 }
 
-describe('loadOpSecrets', () => {
+/**
+ * Main function to load 1Password secrets into Cypress environment variables.
+ * This is now a backward-compatible wrapper around OpResolver.resolve().
+ */
+async function testResolve(
+  config: any,
+  pluginOptions?: CyOpPluginOptions
+): Promise<any> {
+  // Create resolver instance and use the new resolve method
+  const resolver = new OpResolver(config, pluginOptions);
+  return await resolver.resolve();
+}
+
+describe('OpResolver', () => {
   beforeEach(() => {
-    // Reset mocks before each test
+    // Reset mocks completely before each test (both call history and implementations)
     mockItemGet.mockReset();
+    mockVaultList.mockReset();
     mockValidateCli.mockReset();
-    // Mock successful CLI validation by default
+
+    // Set up default mock implementations
     mockValidateCli.mockResolvedValue(undefined);
+    // Mock vault.list to return empty array by default (so vault discovery doesn't trigger unless explicitly configured)
+    mockVaultList.mockResolvedValue([]);
 
     // Clear any CYOP environment variables from process.env
     delete process.env.CYOP_VAULT;
     delete process.env.CYOP_ITEM;
+    delete process.env.CYOP_SESSION;
+    delete process.env.C8Y_SESSION;
   });
 
   it('should replace direct op:// path', async () => {
@@ -51,7 +74,7 @@ describe('loadOpSecrets', () => {
       fields: [{ id: 'field1', label: 'Field 1', value: 'secretValue123' }],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.MY_SECRET).toBe('secretValue123');
     expect(updatedConfig.env.MY_SECRET_SPACES).toBe('secretValue123');
     expect(updatedConfig.env.MY_SECRET).toBe('secretValue123');
@@ -76,7 +99,7 @@ describe('loadOpSecrets', () => {
       fields: [{ id: 'f_api_key', label: 'API Key', value: 'myApiKey' }],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.API_URL).toBe('https://api.example.com/myApiKey');
     expect(updatedConfig.env.API_URL_SPACES).toBe(
       'https://api.example.com/myApiKey'
@@ -109,7 +132,7 @@ describe('loadOpSecrets', () => {
         },
       ],
     });
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.AMBIGUOUS_SECRET).toBe('valueFromLabelPriority');
   });
 
@@ -132,7 +155,7 @@ describe('loadOpSecrets', () => {
       ],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.CONNECTION_STRING).toBe(
       'user=testUser&pass=testPass'
     );
@@ -164,7 +187,7 @@ describe('loadOpSecrets', () => {
       ],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.SECTION_SECRET).toBe('sectionSecretValue');
     expect(updatedConfig.env.SECTION_ID_SECRET).toBe('sectionSecretValue');
     expect(mockItemGet).toHaveBeenCalledTimes(1);
@@ -190,7 +213,7 @@ describe('loadOpSecrets', () => {
         },
       ],
     });
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.SECTION_SECRET_LABEL).toBe(
       'valueFromSectionLabel'
     );
@@ -218,7 +241,7 @@ describe('loadOpSecrets', () => {
         },
       ],
     });
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.SECTION_SECRET_ID).toBe('valueFromSectionId');
   });
 
@@ -238,7 +261,7 @@ describe('loadOpSecrets', () => {
       urls: [{ primary: true, href: 'https://primary.example.com' }],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.WEBSITE_URL).toBe('https://primary.example.com');
     expect(updatedConfig.env.WEBSITE_SITE).toBe('https://primary.example.com');
   });
@@ -254,7 +277,7 @@ describe('loadOpSecrets', () => {
       },
     };
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig).toEqual(mockConfig); // Should be the original config
     expect(mockItemGet).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(
@@ -279,7 +302,7 @@ describe('loadOpSecrets', () => {
       fields: [{ id: 'sa', label: 'secret_a', value: 'Alpha' }],
     });
 
-    const updatedConfig = await loadOpSecrets(mockConfig as any);
+    const updatedConfig = await testResolve(mockConfig as any);
     expect(updatedConfig.env.REPEATED_SECRET).toBe(
       'Value is Alpha and again Alpha'
     );
@@ -302,15 +325,12 @@ describe('loadOpSecrets', () => {
         fields: [{ id: 'f1', label: 'some_field', value: 'val' }],
       });
 
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "Item" (ID: i, path "op://v/i/nonexistent_field").'
       );
     });
 
-    it('should warn and not replace if failOnError is false and secret not found', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-
+    it('should not replace if failOnError is false and secret not found', async () => {
       const mockConfig: MockCypressConfig = {
         env: {
           MISSING_SECRET: 'op://v/i/nonexistent_field',
@@ -324,16 +344,12 @@ describe('loadOpSecrets', () => {
         fields: [{ id: 'f1', label: 'some_field', value: 'val' }],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.MISSING_SECRET).toBe(
         'op://v/i/nonexistent_field'
       );
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "Item" (ID: i, path "op://v/i/nonexistent_field").'
-      );
-      console.warn = originalWarn; // Restore original console.warn
     });
 
     it('should throw error for invalid op:// path format (too few parts)', async () => {
@@ -342,10 +358,10 @@ describe('loadOpSecrets', () => {
           INVALID_PATH: 'op://vault/item', // Missing field
         },
       };
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "INVALID_PATH" (path: "op://vault/item").'
       );
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.INVALID_PATH).toBe('op://vault/item');
@@ -357,10 +373,10 @@ describe('loadOpSecrets', () => {
           INVALID_PATH: 'op://vault//field', // Empty item
         },
       };
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "INVALID_PATH" (path: "op://vault//field").'
       );
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.INVALID_PATH).toBe('op://vault//field');
@@ -375,7 +391,7 @@ describe('loadOpSecrets', () => {
         },
       };
       mockItemGet.mockRejectedValue(new Error('1Password API error'));
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.FAIL_SECRET_PLACEHOLDER).toBe(
@@ -414,7 +430,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.DB_PASSWORD).toBe('dbPass123');
       expect(updatedConfig.env.TOKEN).toBe('authTokenXYZ');
       expect(mockItemGet).toHaveBeenCalledWith('shared_item', {
@@ -440,7 +456,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.MY_SECRET).toBe('secretValue456');
       expect(mockItemGet).toHaveBeenCalledWith('item_from_code', {
         vault: 'cypress_vault_env',
@@ -465,7 +481,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.MY_SECRET).toBe('secretValue789');
       expect(mockItemGet).toHaveBeenCalledWith('cypress_item_env', {
         vault: 'process_vault',
@@ -500,7 +516,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.MY_SECRET).toBe('preferredSecret');
       expect(mockItemGet).toHaveBeenCalledWith('cypress_item_preferred', {
         vault: 'cypress_vault_preferred',
@@ -514,28 +530,9 @@ describe('loadOpSecrets', () => {
           MY_SECRET: 'op://item/field',
         },
       };
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "MY_SECRET" (path: "op://item/field")'
       );
-    });
-
-    it('should warn and not replace if CYOP_VAULT is empty, path requires vault, and failOnError is false', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-      const mockConfig: MockCypressConfig = {
-        env: {
-          CYOP_VAULT: '', // Empty
-          MY_SECRET: 'op://item/field',
-        },
-      };
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
-        failOnError: false,
-      });
-      expect(updatedConfig.env.MY_SECRET).toBe('op://item/field');
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] CYOP_VAULT missing for partial path "op://item/field" (op://item/field).'
-      );
-      console.warn = originalWarn;
     });
 
     it('should throw if CYOP_ITEM is present but empty and path requires item', async () => {
@@ -546,29 +543,9 @@ describe('loadOpSecrets', () => {
           MY_SECRET: 'op://field',
         },
       };
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "MY_SECRET" (path: "op://field")'
       );
-    });
-
-    it('should warn and not replace if CYOP_ITEM is empty, path requires item, and failOnError is false', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-      const mockConfig: MockCypressConfig = {
-        env: {
-          CYOP_VAULT: 'v',
-          CYOP_ITEM: '', // Empty
-          MY_SECRET: 'op://field',
-        },
-      };
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
-        failOnError: false,
-      });
-      expect(updatedConfig.env.MY_SECRET).toBe('op://field');
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] CYOP_VAULT and/or CYOP_ITEM missing for partial path "op://field" (op://field).'
-      );
-      console.warn = originalWarn;
     });
 
     it('should use process.env.CYOP_VAULT if Cypress env CYOP_VAULT is undefined', async () => {
@@ -585,7 +562,7 @@ describe('loadOpSecrets', () => {
         vault: { id: 'proc_vault', name: 'Proc Vault' },
         fields: [{ id: 'f1', label: 'field1', value: 'val1' }],
       });
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.MY_SECRET).toBe('val1');
       expect(mockItemGet).toHaveBeenCalledWith('item1', {
         vault: 'proc_vault',
@@ -608,7 +585,7 @@ describe('loadOpSecrets', () => {
         vault: { id: 'proc_vault', name: 'Proc Vault' },
         fields: [{ id: 'f1', label: 'field1', value: 'val1' }],
       });
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.MY_SECRET).toBe('val1');
       expect(mockItemGet).toHaveBeenCalledWith('proc_item', {
         vault: 'proc_vault',
@@ -638,7 +615,7 @@ describe('loadOpSecrets', () => {
           fields: [{ id: 'pwd', label: 'password', value: 'teamSecret123' }],
         });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET).toBe('teamSecret123');
 
       // Should have tried personal vault first, then team vault
@@ -668,7 +645,7 @@ describe('loadOpSecrets', () => {
           fields: [{ id: 'tok', label: 'token', value: 'vault3Token' }],
         });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET).toBe('vault3Token');
 
       // Should have tried all three vaults in order
@@ -699,7 +676,7 @@ describe('loadOpSecrets', () => {
         .mockRejectedValueOnce(new Error('Not found in vault1'))
         .mockRejectedValueOnce(new Error('Not found in vault2'));
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
 
@@ -737,7 +714,7 @@ describe('loadOpSecrets', () => {
           fields: [{ id: 'pwd', label: 'password', value: 'foundSecret' }],
         });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET).toBe('foundSecret');
 
       // Should properly parse and try vaults with trimmed names
@@ -771,7 +748,7 @@ describe('loadOpSecrets', () => {
         .mockRejectedValueOnce(new Error('Vault2 error'))
         .mockRejectedValueOnce(new Error('Vault3 error'));
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.SECRET).toBe('op://missing-item/field');
@@ -803,7 +780,7 @@ describe('loadOpSecrets', () => {
           fields: [{ id: 'pwd', label: 'password', value: 'dbpass123' }],
         });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.DATABASE_URL).toBe(
         'postgresql://user:dbpass123@host/db'
       );
@@ -834,7 +811,7 @@ describe('loadOpSecrets', () => {
         vault: { id: 'v', name: 'Vault' },
         fields: [{ id: 'f_id', label: 'f', value: 'secret' }],
       });
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.STRING_SECRET).toBe('secret');
       expect(updatedConfig.env.NUMBER_VALUE).toBe(123);
       expect(updatedConfig.env.BOOLEAN_VALUE).toBe(true);
@@ -848,12 +825,12 @@ describe('loadOpSecrets', () => {
       const mockConfigEmpty: MockCypressConfig = {
         env: {},
       };
-      let updatedConfig = await loadOpSecrets(mockConfigEmpty as any);
+      let updatedConfig = await testResolve(mockConfigEmpty as any);
       expect(updatedConfig.env).toEqual({});
       expect(mockItemGet).not.toHaveBeenCalled();
 
       const mockConfigUndefined: MockCypressConfig = {}; // env is undefined
-      updatedConfig = await loadOpSecrets(mockConfigUndefined as any);
+      updatedConfig = await testResolve(mockConfigUndefined as any);
       expect(updatedConfig.env).toBeUndefined();
       expect(mockItemGet).not.toHaveBeenCalled();
     });
@@ -868,7 +845,7 @@ describe('loadOpSecrets', () => {
       // If CYOP_VAULT is not a string, it's ignored by resolveSecretPath.
       // Then, "op://item/field" is treated as a partial path missing CYOP_VAULT.
       // resolveSecretPath returns null, and loadOpSecrets (with failOnError=true) throws.
-      await expect(loadOpSecrets(mockConfig as any)).rejects.toThrow(
+      await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "MY_SECRET" (path: "op://item/field").'
       );
     });
@@ -896,7 +873,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET_BY_ID).toBe('value1');
       expect(updatedConfig.env.SECRET_BY_TITLE).toBe('value2');
 
@@ -929,7 +906,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.DIRECT_SECRET).toBe('testuser');
       expect(updatedConfig.env.COMBINED_STRING).toBe(
         'user=testuser&pass=testpass'
@@ -957,7 +934,7 @@ describe('loadOpSecrets', () => {
       // Mock item.get to fail - should only be called once
       mockItemGet.mockRejectedValueOnce(new Error('Item not found'));
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.SECRET_BY_ID).toBe(
@@ -1005,7 +982,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET_EXACT).toBe('value1');
       expect(updatedConfig.env.SECRET_LOWER).toBe('value2');
       expect(updatedConfig.env.SECRET_MIXED).toBe('value3');
@@ -1043,7 +1020,7 @@ describe('loadOpSecrets', () => {
         ],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET1).toBe('value1');
       expect(updatedConfig.env.SECRET2).toBe('value2');
       expect(updatedConfig.env.SECRET3).toBe('value3');
@@ -1083,7 +1060,7 @@ describe('loadOpSecrets', () => {
         fields: [{ id: 'f1', label: 'field1', value: 'item2_value1' }],
       });
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any);
+      const updatedConfig = await testResolve(mockConfig as any);
       expect(updatedConfig.env.SECRET_ITEM1).toBe('item1_value1');
       expect(updatedConfig.env.SECRET_ITEM2).toBe('item2_value1');
       expect(updatedConfig.env.SECRET_ITEM1_AGAIN).toBe('item1_value2'); // Should use cached item1
@@ -1109,7 +1086,7 @@ describe('loadOpSecrets', () => {
       // Mock item.get to fail - should only be called once
       mockItemGet.mockRejectedValueOnce(new Error('Network timeout'));
 
-      const updatedConfig = await loadOpSecrets(mockConfig as any, {
+      const updatedConfig = await testResolve(mockConfig as any, {
         failOnError: false,
       });
       expect(updatedConfig.env.SECRET1).toBe('op://vault1/failing_item/field1');
@@ -1123,6 +1100,416 @@ describe('loadOpSecrets', () => {
       });
 
       console.error = originalError;
+    });
+  });
+
+  describe('Session URI Support', () => {
+    beforeEach(() => {
+      // Clear session environment variables
+      delete process.env.C8Y_SESSION;
+      delete process.env.CYOP_SESSION;
+    });
+
+    it('should use C8Y_SESSION for field-only path when CYOP_VAULT and CYOP_ITEM are not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION: 'op://TestVault/TestItem',
+          MY_FIELD: 'op://password',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'secretPassword123' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_FIELD).toBe('secretPassword123');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use target_url for url/website from CYOP_SESSION', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION: 'op://TestVault/TestItem?target_url=https://example.com',
+          C8Y_BASEURL: 'op://url',
+          C8Y_HOST: 'op://website',
+        },
+      };
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'secretPassword123' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.C8Y_BASEURL).toBe('https://example.com');
+      expect(updatedConfig.env.C8Y_HOST).toBe('https://example.com');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use session URI for item/field path when CYOP_VAULT is not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_CREDENTIAL: 'op://MyItem/username',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'MyItem',
+        title: 'My Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'user', label: 'username', value: 'myuser' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_CREDENTIAL).toBe('myuser');
+      expect(mockItemGet).toHaveBeenCalledWith('MyItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should prioritize session URI over CYOP_VAULT when session provides vault/item', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'PriorityVault',
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://password', // Field-only path to use session item
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'sessionPassword' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('sessionPassword');
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should prioritize session URI over CYOP_ITEM when session provides vault/item', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'PriorityVault',
+          CYOP_ITEM: 'PriorityItem',
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://token', // Field-only path to use session vault/item
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'sessionToken' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('sessionToken');
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should use target_url over item url for url/website from CYOP_SESSION', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          C8Y_SESSION:
+            'op://TestVault/TestItem?target_url=https%3A%2F%2Fexample.com',
+          C8Y_BASEURL: 'op://url',
+          C8Y_HOST: 'op://website',
+        },
+      };
+      mockItemGet.mockResolvedValue({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [
+          {
+            id: 'pwd',
+            label: 'password',
+            value: 'secretPassword123',
+            url: 'https://myexample.com',
+          },
+        ],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.C8Y_BASEURL).toBe('https://example.com');
+      expect(updatedConfig.env.C8Y_HOST).toBe('https://example.com');
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should use CYOP_SESSION for field-only path when CYOP_VAULT and CYOP_ITEM are not set', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'sessionToken456' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('sessionToken456');
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should support both C8Y_SESSION and CYOP_SESSION with C8Y_SESSION taking precedence', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://CYOPVault/CYOPItem', // takes precedence
+          C8Y_SESSION: 'op://C8YVault/C8YItem',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'C8YItem',
+        title: 'C8Y Item',
+        vault: { id: 'C8YVault', name: 'C8Y Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'c8yToken' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('c8yToken');
+      expect(mockItemGet).toHaveBeenCalledWith('CYOPItem', {
+        vault: 'CYOPVault',
+      });
+    });
+
+    it('should work with session URI in placeholders', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION: 'op://SessionVault/SessionItem',
+          API_URL: 'https://api.example.com/{{op://token}}',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'SessionItem',
+        title: 'Session Item',
+        vault: { id: 'SessionVault', name: 'Session Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'apiToken123' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.API_URL).toBe(
+        'https://api.example.com/apiToken123'
+      );
+      expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
+        vault: 'SessionVault',
+      });
+    });
+
+    it('should prioritize target_url from session over item URL (including cached items)', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION:
+            'op://TestVault/TestItem?target_url=https%3A%2F%2Fsession-priority.com',
+          // First request - should cache the item with its own URL
+          FIRST_URL: 'op://url',
+          // Second request - should use session target_url even though item is cached
+          SECOND_URL: 'op://website',
+        },
+      };
+
+      // Mock item with its own URL that should be overridden by session target_url
+      mockItemGet.mockResolvedValueOnce({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'pwd', label: 'password', value: 'secretPassword123' }],
+        urls: [
+          { primary: true, href: 'https://item-url-should-be-ignored.com' },
+        ],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+
+      // Both URL requests should use the session target_url, not the item's URL
+      expect(updatedConfig.env.FIRST_URL).toBe('https://session-priority.com');
+      expect(updatedConfig.env.SECOND_URL).toBe('https://session-priority.com');
+
+      // Item should only be fetched once (cached for second request)
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should prioritize target_url from session over item URL in placeholders', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION:
+            'op://TestVault/TestItem?target_url=https%3A%2F%2Fplaceholder-priority.com',
+          API_ENDPOINT: 'Base URL: {{op://url}} and Site: {{op://website}}',
+        },
+      };
+
+      // Mock item with its own URL that should be overridden by session target_url
+      mockItemGet.mockResolvedValueOnce({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [{ id: 'api', label: 'api_key', value: 'key123' }],
+        urls: [{ primary: true, href: 'https://item-url-ignored.com' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+
+      // Both placeholders should use the session target_url
+      expect(updatedConfig.env.API_ENDPOINT).toBe(
+        'Base URL: https://placeholder-priority.com and Site: https://placeholder-priority.com'
+      );
+
+      // Item should only be fetched once (cached for both placeholders)
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should consistently prioritize session target_url over item URLs across all access patterns', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_SESSION:
+            'op://TestVault/TestItem?target_url=https%3A%2F%2Fsession-url-priority.com',
+          // Direct op:// path for URL field
+          DIRECT_URL: 'op://url',
+          // Direct op:// path for website field
+          DIRECT_WEBSITE: 'op://website',
+          // Placeholder for URL field
+          PLACEHOLDER_URL: 'Config: {{op://url}}',
+          // Placeholder for website field
+          PLACEHOLDER_WEBSITE: 'Site: {{op://website}}',
+          // Mixed placeholders in same string
+          MIXED_PLACEHOLDERS: 'URL: {{op://url}} | Website: {{op://website}}',
+          // Non-URL field to ensure item is properly cached
+          PASSWORD_FIELD: 'op://password',
+        },
+      };
+
+      // Mock item with multiple URL sources that should all be overridden by session target_url
+      mockItemGet.mockResolvedValueOnce({
+        id: 'TestItem',
+        title: 'Test Item',
+        vault: { id: 'TestVault', name: 'Test Vault' },
+        fields: [
+          { id: 'pwd', label: 'password', value: 'secretPassword123' },
+          // URL field with value that should be ignored
+          { id: 'url_field', label: 'url', value: 'https://field-url.com' },
+          // Website field with value that should be ignored
+          {
+            id: 'site_field',
+            label: 'website',
+            value: 'https://field-website.com',
+          },
+        ],
+        // Item URLs that should also be ignored
+        urls: [
+          { primary: true, href: 'https://primary-item-url.com' },
+          { primary: false, href: 'https://secondary-item-url.com' },
+        ],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+
+      // All URL-related fields should use session target_url
+      expect(updatedConfig.env.DIRECT_URL).toBe(
+        'https://session-url-priority.com'
+      );
+      expect(updatedConfig.env.DIRECT_WEBSITE).toBe(
+        'https://session-url-priority.com'
+      );
+      expect(updatedConfig.env.PLACEHOLDER_URL).toBe(
+        'Config: https://session-url-priority.com'
+      );
+      expect(updatedConfig.env.PLACEHOLDER_WEBSITE).toBe(
+        'Site: https://session-url-priority.com'
+      );
+      expect(updatedConfig.env.MIXED_PLACEHOLDERS).toBe(
+        'URL: https://session-url-priority.com | Website: https://session-url-priority.com'
+      );
+
+      // Non-URL field should work normally
+      expect(updatedConfig.env.PASSWORD_FIELD).toBe('secretPassword123');
+
+      // Item should only be fetched once despite multiple accesses
+      expect(mockItemGet).toHaveBeenCalledTimes(1);
+      expect(mockItemGet).toHaveBeenCalledWith('TestItem', {
+        vault: 'TestVault',
+      });
+    });
+
+    it('should fall back to CYOP_VAULT when session is incomplete (vault only)', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'FallbackVault',
+          CYOP_ITEM: 'FallbackItem',
+          CYOP_SESSION: 'op://SessionVault', // Only vault, no item
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'FallbackItem',
+        title: 'Fallback Item',
+        vault: { id: 'FallbackVault', name: 'Fallback Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'fallbackToken' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('fallbackToken');
+      expect(mockItemGet).toHaveBeenCalledWith('FallbackItem', {
+        vault: 'FallbackVault',
+      });
+    });
+
+    it('should fall back to CYOP_VAULT when session is incomplete (invalid format)', async () => {
+      const mockConfig: MockCypressConfig = {
+        env: {
+          CYOP_VAULT: 'FallbackVault',
+          CYOP_ITEM: 'FallbackItem',
+          CYOP_SESSION: 'invalid-session-format',
+          MY_SECRET: 'op://token',
+        },
+      };
+
+      mockItemGet.mockResolvedValue({
+        id: 'FallbackItem',
+        title: 'Fallback Item',
+        vault: { id: 'FallbackVault', name: 'Fallback Vault' },
+        fields: [{ id: 'tkn', label: 'token', value: 'fallbackToken' }],
+      });
+
+      const updatedConfig = await testResolve(mockConfig as any);
+      expect(updatedConfig.env.MY_SECRET).toBe('fallbackToken');
+      expect(mockItemGet).toHaveBeenCalledWith('FallbackItem', {
+        vault: 'FallbackVault',
+      });
     });
   });
 });

@@ -8,9 +8,11 @@ This plugin uses the official [@1password/op-js](https://1password.github.io/op-
 
 *   Load secrets directly from your 1Password vaults into Cypress environment variables.
 *   **Multiple Vault Support**: Configure multiple vaults in `CYOP_VAULT` (comma-separated or array) to automatically search across personal, team, and shared vaults in order.
+*   **Automatic Vault Discovery**: When no vault is configured, automatically discover and search across all accessible vaults for maximum flexibility.
 *   Supports two methods for specifying secrets:
     *   Directly assigning a 1Password secret reference URI (e.g., `op://vault/item/field`) to an environment variable.
     *   Embedding secret reference URIs as placeholders (e.g., `{{op://vault/item/field}}`) within string environment variables.
+*   **Performance Optimized**: Intelligent caching prevents duplicate API calls within the same operation.
 *   Uses the official [@1password/op-js](https://1password.github.io/op-js/) library, enabling flexible authentication.
 
 ## Prerequisites
@@ -264,8 +266,6 @@ export CYOP_VAULT="PersonalVault,TeamVault,SharedSecrets"
 export CYOP_ITEM="ServiceCredentials"
 ```
 
-If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` variables are not set (either in Cypress env or process.env), a warning will be logged, and the secret will not be resolved.
-
 ## Troubleshooting
 
 ### Authentication Issues (`1Password CLI validation failed`, `Failed to load secret ...` with auth errors)
@@ -283,6 +283,10 @@ If a partial path is provided but the required `CYOP_VAULT` or `CYOP_ITEM` varia
 *   **Vault access permissions**: Ensure your 1Password account, Service Account, or Connect identity has access to all vaults listed in `CYOP_VAULT`.
 *   **Vault names vs UUIDs**: Make sure vault names are exact matches (case-sensitive) or use vault UUIDs for more reliable identification.
 *   **Order matters**: Items will be retrieved from the first vault in the list where they're found. If you have duplicate items across vaults, the plugin will use the one from the vault listed first in `CYOP_VAULT`.
+
+### Automatic Vault Discovery Issues
+*   **"Could not automatically discover vaults"**: This indicates the plugin couldn't retrieve the vault list from 1Password. Check your authentication and ensure you have permission to list vaults.
+*   **Slow performance**: Automatic discovery requires an extra API call. For better performance in production, explicitly configure `CYOP_VAULT` with the specific vaults you need.
      
 ### Secrets are not replaced or are `undefined` in tests
 
