@@ -2,8 +2,6 @@ import debug from 'debug';
 import {
   item,
   validateCli,
-  setConnect,
-  setServiceAccount,
   Item as OpJsItem,
   ValueField as OpJsValueField,
 } from '@1password/op-js';
@@ -31,7 +29,7 @@ interface CyOpResolvedSecretIdentifier {
   itemName: string;
   fieldSpecifier: string;
   originalPath: string;
-  url?: string;
+  target_url?: string;
 }
 
 // Define types for cached items
@@ -62,16 +60,25 @@ export class OpResolver {
   private itemCache: CyOpCachedItemEntry[] = [];
   private resolvedSecretsCache = new Map<string, string | undefined>();
   private log: debug.Debugger;
-  private cypressEnv?: Record<string, any>;
+  private cypressConfig: Cypress.PluginConfigOptions;
   private pluginOptions?: CyOpPluginOptions;
   private failOnError: boolean;
 
   constructor(
-    cypressEnv?: Record<string, any>,
+    config: Cypress.PluginConfigOptions,
     pluginOptions?: CyOpPluginOptions
   ) {
     this.log = debug('cyop:resolver');
-    this.cypressEnv = cypressEnv;
+
+    // Validate config
+    if (!config || typeof config !== 'object') {
+      throw new Error(
+        `${ERROR_PREFIX} Invalid config provided to OpResolver constructor.`
+      );
+    }
+
+    this.cypressConfig = { ...config };
+
     this.pluginOptions = pluginOptions;
     this.failOnError = pluginOptions?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
   }
@@ -121,65 +128,33 @@ export class OpResolver {
   private resolveSecretPath(
     originalOpPath: string
   ): CyOpResolvedSecretIdentifier | null {
-    const vaultFromCypressEnv = this.cypressEnv?.CYOP_VAULT;
-    const itemFromCypressEnv = this.cypressEnv?.CYOP_ITEM;
-    const sessionFromCypressEnv =
-      this.cypressEnv?.CYOP_SESSION || this.cypressEnv?.C8Y_SESSION;
-
-    let vaultEnv =
-      vaultFromCypressEnv !== undefined
-        ? vaultFromCypressEnv
-        : process.env.CYOP_VAULT;
-    let itemEnv =
-      typeof itemFromCypressEnv === 'string'
-        ? itemFromCypressEnv
-        : process.env.CYOP_ITEM;
+    const env = this.cypressConfig.env ?? {};
+    let vaultEnv = env.CYOP_VAULT ?? process.env.CYOP_VAULT;
+    let itemEnv = env.CYOP_ITEM ?? process.env.CYOP_ITEM;
     const sessionEnv =
-      typeof sessionFromCypressEnv === 'string'
-        ? sessionFromCypressEnv
-        : (process.env.CYOP_SESSION ?? process.env.C8Y_SESSION);
+      env.CYOP_SESSION ??
+      env.C8Y_SESSION ??
+      process.env.CYOP_SESSION ??
+      process.env.C8Y_SESSION;
 
     let sessionUrl: string | undefined = undefined;
-    let vaultSource = 'none';
-    let itemSource = 'none';
 
-    if (sessionEnv) {
-      const sessionOpObject = this.parseOpUri(sessionEnv, true);
-      if (sessionOpObject?.vault && sessionOpObject?.item) {
-        // Session has both vault and item - use them with strict priority
-        vaultEnv = sessionOpObject.vault;
-        itemEnv = sessionOpObject.item;
-        vaultSource = 'session';
-        itemSource = 'session';
-        this.log(`Using vault and item from session (strict priority)`);
+    // If session is provided and valid, always use vault/item from session
+    if (typeof sessionEnv === 'string') {
+      const sessionOp = this.parseOpUri(sessionEnv, true);
+      if (sessionOp?.vault && sessionOp?.item) {
+        vaultEnv = sessionOp.vault;
+        itemEnv = sessionOp.item;
+        sessionUrl = sessionOp.url;
       } else {
-        // Session doesn't have both - use as fallback
-        if (!itemEnv && sessionOpObject?.item) {
-          itemEnv = sessionOpObject.item;
-          itemSource = 'session';
-        } else if (itemEnv) {
-          itemSource = 'env';
-        }
-        if (!vaultEnv && sessionOpObject?.vault) {
-          vaultEnv = sessionOpObject.vault;
-          vaultSource = 'session';
-        } else if (vaultEnv) {
-          vaultSource = 'env';
-        }
+        if (!itemEnv && sessionOp?.item) itemEnv = sessionOp.item;
+        if (!vaultEnv && sessionOp?.vault) vaultEnv = sessionOp.vault;
+        sessionUrl = sessionOp?.url;
       }
-      sessionUrl = sessionOpObject?.url;
-    } else {
-      // No session - check env vars
-      if (vaultEnv) vaultSource = 'env';
-      if (itemEnv) itemSource = 'env';
     }
 
-    this.log(
-      `Resolving "${originalOpPath}" (vault: ${vaultSource}, item: ${itemSource})`
-    );
-
     if (!originalOpPath || !originalOpPath.startsWith(OP_PROTOCOL_PREFIX)) {
-      console.warn(
+      this.log(
         `${ERROR_PREFIX} Invalid path: "${originalOpPath}". Must be an ${OP_PROTOCOL_PREFIX} URI.`
       );
       return null;
@@ -187,28 +162,25 @@ export class OpResolver {
 
     const opUri = this.parseOpUri(originalOpPath, false);
     if (!opUri) {
-      console.warn(`${ERROR_PREFIX} Invalid path: "${originalOpPath}".`);
+      this.log(`${ERROR_PREFIX} Invalid path: "${originalOpPath}".`);
       return null;
     }
 
-    const vaultNames: string[] | undefined = opUri?.vault
+    const vaultNames = opUri.vault
       ? [opUri.vault]
       : this.parseVaultEnvironment(vaultEnv);
-    if (!vaultNames || vaultNames.length === 0) {
-      console.warn(
+    if (!vaultNames.length) {
+      this.log(
         `${ERROR_PREFIX} CYOP_VAULT missing for partial path "${originalOpPath}" (${OP_PROTOCOL_PREFIX}item/field).`
       );
       return null;
     }
-    const itemName = opUri?.item ?? itemEnv;
-    const fieldSpecifier = opUri?.field;
-    let url = sessionUrl; // Start with session URL
-    if (opUri?.url) {
-      url = opUri.url; // Override with URI URL if available
-    }
+    const itemName = opUri.item ?? itemEnv;
+    const fieldSpecifier = opUri.field;
+    const url = sessionUrl ?? opUri.url;
 
-    if (vaultNames.length === 0 || !itemName || !fieldSpecifier) {
-      console.warn(
+    if (!itemName || !fieldSpecifier) {
+      this.log(
         `${ERROR_PREFIX} Could not determine vault, item and field for "${originalOpPath}".`
       );
       return null;
@@ -219,7 +191,7 @@ export class OpResolver {
       itemName,
       fieldSpecifier,
       originalPath: originalOpPath,
-      url,
+      target_url: url,
     };
   }
 
@@ -231,7 +203,7 @@ export class OpResolver {
     itemObject: OpJsItem,
     resolvedIdentifier: CyOpResolvedSecretIdentifier
   ): string | undefined {
-    const { fieldSpecifier, url } = resolvedIdentifier;
+    const { fieldSpecifier, target_url: url } = resolvedIdentifier;
     const fieldSpecifierLower = fieldSpecifier.toLowerCase();
 
     if (
@@ -413,7 +385,7 @@ export class OpResolver {
           );
           const message = `Previously failed to fetch item "${itemName}" (vault "${cachedEntry.vaultName}") for path "${cachedEntry.originalPath}". Error: ${cachedEntry.error.message}`;
           if (this.failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-          console.warn(`${ERROR_PREFIX} ${message}`);
+          this.log(`${ERROR_PREFIX} ${message}`);
           return undefined;
         }
       } else {
@@ -443,7 +415,7 @@ export class OpResolver {
           } else {
             const message = `Field "${fieldSpecifier}" not found or value is null/undefined in cached item "${cachedItem.title}" (ID: ${cachedItem.id}, path "${originalPath}").`;
             if (this.failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-            console.warn(`${ERROR_PREFIX} ${message}`);
+            this.log(`${ERROR_PREFIX} ${message}`);
             return undefined;
           }
         }
@@ -495,7 +467,7 @@ export class OpResolver {
         } else {
           const message = `Field "${fieldSpecifier}" not found or value is null/undefined in item "${fetchedItemDataAsItem.title}" (ID: ${fetchedItemDataAsItem.id}, path "${originalPath}").`;
           if (this.failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-          console.warn(`${ERROR_PREFIX} ${message}`);
+          this.log(`${ERROR_PREFIX} ${message}`);
           return undefined;
         }
       } catch (error: any) {
@@ -517,7 +489,7 @@ export class OpResolver {
 
           if (error.message && error.message.startsWith(ERROR_PREFIX)) {
             if (this.failOnError) throw error;
-            console.warn(error.message);
+            this.log(error.message);
             return undefined;
           }
 
@@ -539,7 +511,7 @@ export class OpResolver {
     const vaultsList = vaultNames.join(', ');
     const message = `Item "${itemName}" not found in any of the specified vaults [${vaultsList}] for path "${originalPath}".`;
     if (this.failOnError) throw new Error(`${ERROR_PREFIX} ${message}`);
-    console.warn(`${ERROR_PREFIX} ${message}`);
+    this.log(`${ERROR_PREFIX} ${message}`);
     return undefined;
   }
 
@@ -626,28 +598,17 @@ export class OpResolver {
   clearCaches(): void {
     this.itemCache = [];
     this.resolvedSecretsCache.clear();
-    this.log('Cleared all caches.');
+    this.log('Cleared all caches and cached items.');
   }
 
   /**
    * Main method to resolve 1Password secrets in Cypress environment variables.
    * This is the new public interface for the OpResolver class.
    */
-  async resolve(
-    config: Cypress.PluginConfigOptions,
-    options?: CyOpPluginOptions
-  ): Promise<Cypress.PluginConfigOptions> {
+  async resolve(): Promise<Cypress.PluginConfigOptions> {
     const log = debug('cyop:resolve');
 
-    if (!config || typeof config !== 'object') {
-      return config;
-    }
-    const updatedConfig = { ...config };
-    if (!updatedConfig.env) {
-      return config;
-    }
-
-    const failOnError = options?.failOnError ?? DEFAULT_FAIL_ON_ERROR;
+    const updatedConfig = { ...this.cypressConfig };
 
     try {
       await validateCli();
@@ -656,15 +617,16 @@ export class OpResolver {
       console.error(
         `${ERROR_PREFIX} 1Password CLI validation failed. Plugin will not load secrets. Error: ${error.message}`
       );
-      return config;
+      return this.cypressConfig;
+    }
+
+    // Only process environment variables if they exist
+    if (!updatedConfig.env) {
+      log('No environment variables to process.');
+      return updatedConfig;
     }
 
     log('Processing Cypress environment variables for 1Password secrets...');
-
-    // Update the resolver's configuration with the provided options
-    this.pluginOptions = options;
-    this.failOnError = failOnError;
-    this.cypressEnv = updatedConfig.env;
 
     for (const envVarName in updatedConfig.env) {
       if (Object.prototype.hasOwnProperty.call(updatedConfig.env, envVarName)) {
@@ -691,14 +653,14 @@ export class OpResolver {
                   `Env var "${envVarName}" updated with secret from "${opPath}".`
                 );
               } else {
-                if (!failOnError) {
+                if (!this.failOnError) {
                   log(
                     `Env var "${envVarName}" (path "${opPath}") could not be resolved to a value. Variable not updated.`
                   );
                 }
               }
             } catch (error: any) {
-              if (failOnError) {
+              if (this.failOnError) {
                 // Wrap the error with env var context if it doesn't already include it
                 if (
                   error.message &&
@@ -712,7 +674,7 @@ export class OpResolver {
                   throw error;
                 }
               }
-              console.warn(
+              this.log(
                 `${ERROR_PREFIX} Error processing env var "${envVarName}": ${error.message}. Variable not updated.`
               );
             }
@@ -727,8 +689,8 @@ export class OpResolver {
                 `Env var "${envVarName}" updated after placeholder replacement.`
               );
             } catch (error: any) {
-              if (failOnError) throw error;
-              console.warn(
+              if (this.failOnError) throw error;
+              this.log(
                 `${ERROR_PREFIX} Error processing placeholders for env var "${envVarName}": ${error.message}. Variable may be partially updated or unchanged.`
               );
             }

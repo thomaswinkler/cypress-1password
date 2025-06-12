@@ -14,9 +14,8 @@ export default async (
   config: Cypress.PluginConfigOptions,
   pluginOptions?: CyOpPluginOptions
 ): Promise<Cypress.PluginConfigOptions> => {
-  // Use the new OpResolver.resolve() method directly
-  const resolver = new OpResolver(config.env, pluginOptions);
-  return resolver.resolve(config, pluginOptions);
+  const resolver = new OpResolver(config, pluginOptions);
+  return resolver.resolve();
 };
 
 // Optional: Helper function to configure op-js authentication if needed.

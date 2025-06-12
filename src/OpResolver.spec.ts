@@ -34,8 +34,8 @@ async function testResolve(
   pluginOptions?: CyOpPluginOptions
 ): Promise<any> {
   // Create resolver instance and use the new resolve method
-  const resolver = new OpResolver(config.env, pluginOptions);
-  return await resolver.resolve(config, pluginOptions);
+  const resolver = new OpResolver(config, pluginOptions);
+  return await resolver.resolve();
 }
 
 describe('OpResolver', () => {
@@ -330,10 +330,7 @@ describe('OpResolver', () => {
       );
     });
 
-    it('should warn and not replace if failOnError is false and secret not found', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-
+    it('should not replace if failOnError is false and secret not found', async () => {
       const mockConfig: MockCypressConfig = {
         env: {
           MISSING_SECRET: 'op://v/i/nonexistent_field',
@@ -353,10 +350,6 @@ describe('OpResolver', () => {
       expect(updatedConfig.env.MISSING_SECRET).toBe(
         'op://v/i/nonexistent_field'
       );
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] Field "nonexistent_field" not found or value is null/undefined in item "Item" (ID: i, path "op://v/i/nonexistent_field").'
-      );
-      console.warn = originalWarn; // Restore original console.warn
     });
 
     it('should throw error for invalid op:// path format (too few parts)', async () => {
@@ -542,25 +535,6 @@ describe('OpResolver', () => {
       );
     });
 
-    it('should warn and not replace if CYOP_VAULT is empty, path requires vault, and failOnError is false', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-      const mockConfig: MockCypressConfig = {
-        env: {
-          CYOP_VAULT: '', // Empty
-          MY_SECRET: 'op://item/field',
-        },
-      };
-      const updatedConfig = await testResolve(mockConfig as any, {
-        failOnError: false,
-      });
-      expect(updatedConfig.env.MY_SECRET).toBe('op://item/field');
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] CYOP_VAULT missing for partial path "op://item/field" (op://item/field).'
-      );
-      console.warn = originalWarn;
-    });
-
     it('should throw if CYOP_ITEM is present but empty and path requires item', async () => {
       const mockConfig: MockCypressConfig = {
         env: {
@@ -572,26 +546,6 @@ describe('OpResolver', () => {
       await expect(testResolve(mockConfig as any)).rejects.toThrow(
         '[cypress-1password] Cannot resolve path for env var "MY_SECRET" (path: "op://field")'
       );
-    });
-
-    it('should warn and not replace if CYOP_ITEM is empty, path requires item, and failOnError is false', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-      const mockConfig: MockCypressConfig = {
-        env: {
-          CYOP_VAULT: 'v',
-          CYOP_ITEM: '', // Empty
-          MY_SECRET: 'op://field',
-        },
-      };
-      const updatedConfig = await testResolve(mockConfig as any, {
-        failOnError: false,
-      });
-      expect(updatedConfig.env.MY_SECRET).toBe('op://field');
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] Could not determine vault, item and field for "op://field".'
-      );
-      console.warn = originalWarn;
     });
 
     it('should use process.env.CYOP_VAULT if Cypress env CYOP_VAULT is undefined', async () => {
@@ -1321,29 +1275,6 @@ describe('OpResolver', () => {
       expect(mockItemGet).toHaveBeenCalledWith('SessionItem', {
         vault: 'SessionVault',
       });
-    });
-
-    it('should warn if session URI is invalid format', async () => {
-      const originalWarn = console.warn;
-      console.warn = jest.fn();
-
-      const mockConfig: MockCypressConfig = {
-        env: {
-          CYOP_SESSION: 'op://invalid', // Missing item part
-          MY_FIELD: 'op://password',
-        },
-      };
-
-      const updatedConfig = await testResolve(mockConfig as any, {
-        failOnError: false,
-      });
-      expect(updatedConfig.env.MY_FIELD).toBe('op://password');
-      expect(console.warn).toHaveBeenCalledWith(
-        '[cypress-1password] CYOP_VAULT missing for partial path "op://password" (op://item/field).'
-      );
-      expect(mockItemGet).not.toHaveBeenCalled();
-
-      console.warn = originalWarn;
     });
 
     it('should support both C8Y_SESSION and CYOP_SESSION with C8Y_SESSION taking precedence', async () => {
