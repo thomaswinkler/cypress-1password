@@ -4,6 +4,8 @@ Integrate your Cypress projects with 1Password to dynamically load secrets into 
 
 This plugin uses the official [@1password/op-js](https://1password.github.io/op-js/) library to securely fetch secrets from your 1Password vaults, making it easy to manage sensitive data in your Cypress tests.
 
+It follows [1Password's Secret Reference Syntax](https://developer.1password.com/docs/cli/secret-reference-syntax/) also used to allow both direct secret references and embedded placeholders within strings, providing flexibility in how you manage and use secrets in your tests. With this, it is mimicking the behavior of the [op inject](https://developer.1password.com/docs/cli/secret-reference-syntax/) cli command for Cypress.
+
 ## Features
 
 *   Load secrets directly from your 1Password vaults into Cypress environment variables.
@@ -33,7 +35,6 @@ This plugin uses the official [@1password/op-js](https://1password.github.io/op-
     # or
     yarn add cypress-1password --dev
     ```
-    *(Assuming this plugin will be published as `cypress-1password`. If you are using it locally, you might install it from a local path or git repository).*
 
 2.  **Set up 1Password Authentication**
 
