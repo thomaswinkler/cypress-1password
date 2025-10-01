@@ -269,6 +269,10 @@ export CYOP_ITEM="ServiceCredentials"
 
 ## Troubleshooting
 
+### Error: [cypress-1password] Cannot resolve path for env var "..." (path: "op://username").
+* Verify you have `CYOP_VAULT` and `CYOP_ITEM` env vars configured.
+* If `op://` uri does not have all required components with vault, item and field, the missing fields need to be configured as env vars.
+
 ### Authentication Issues (`1Password CLI validation failed`, `Failed to load secret ...` with auth errors)
 *   **CLI**: Ensure 1Password CLI is installed, you are signed in (`op signin`), and system authentication/biometrics are working. Try a simple CLI command like `op vault ls` to test.
 *   **Connect**: Verify `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` are correctly set and exported in the environment where Cypress is running. Check Connect server logs.
